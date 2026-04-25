@@ -59,18 +59,18 @@ export function EmployeeCard({
 
   return (
     <div className={cn(
-      "group relative flex overflow-hidden card-enter",
+      "group relative overflow-hidden card-enter",
       "border border-[var(--border)] bg-[var(--surface)]",
       "transition-[border-color,background-color] duration-200",
       "hover:border-[var(--border-raised)] hover:bg-[var(--surface-raised)]",
     )}>
-      {/* Status stripe — widens on hover */}
+      {/* Status stripe — absolute, widens on hover without shifting content */}
       <div className={cn(
-        "w-[3px] group-hover:w-[5px] shrink-0 transition-[width] duration-200",
+        "absolute left-0 top-0 bottom-0 w-[3px] group-hover:w-[5px] transition-[width] duration-200",
         stripeColor[employee.status]
       )} />
 
-      <div className="flex-1 p-4 min-w-0">
+      <div className="p-4 pl-[18px] min-w-0">
         {/* File number row */}
         <div className="flex items-center justify-between mb-3">
           <span className="text-[8px] font-mono tracking-[0.2em] text-[var(--text-dim)] uppercase">
@@ -149,5 +149,41 @@ function DataRow({ label, value }: { label: string; value: string }) {
       </span>
       <span className="text-[10px] font-mono text-[var(--text-muted)] truncate">{value}</span>
     </div>
+  );
+}
+
+/** Compact archive row — dense single-line layout for fired/spared */
+export function ArchiveRow({ employee }: { employee: EmployeeCardData }) {
+  const fileNum = employee._id.slice(-6).toUpperCase();
+  const statusColor =
+    employee.status === "fired" ? "var(--text-dim)" : "var(--blue)";
+
+  return (
+    <Link
+      href={`/employees/${employee._id}`}
+      className="group relative flex items-center overflow-hidden border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-raised)] hover:border-[var(--border-raised)] transition-colors card-enter"
+    >
+      <div
+        className="absolute left-0 top-0 bottom-0 w-[2px] group-hover:w-[3px] transition-[width] duration-200"
+        style={{ background: statusColor }}
+      />
+      <div className="flex-1 flex items-center gap-3 px-4 py-2.5 pl-[14px] min-w-0">
+        <span className="text-[8px] font-mono tracking-[0.18em] text-[var(--text-dim)] uppercase shrink-0">
+          #{fileNum}
+        </span>
+        <span className="font-display text-sm text-[var(--text)] truncate min-w-0 flex-1">
+          {employee.name}
+        </span>
+        <span className="hidden sm:block text-[10px] font-mono text-[var(--text-muted)] truncate min-w-0 max-w-[160px]">
+          {employee.role}
+        </span>
+        <Badge variant={statusVariant[employee.status]}>
+          {statusLabel[employee.status]}
+        </Badge>
+        <span className="text-[var(--text-dim)] group-hover:text-[var(--accent)] transition-colors shrink-0">
+          <ExternalLink className="h-3 w-3" />
+        </span>
+      </div>
+    </Link>
   );
 }
