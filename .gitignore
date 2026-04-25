@@ -43,3 +43,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# tooling / scratch
+.claude/
+.agents/
+.playwright-mcp/
+/*.png
