@@ -115,11 +115,49 @@ export const setStatus = mutation({
       v.literal("pending"),
       v.literal("approved"),
       v.literal("rejected"),
-      v.literal("sent")
+      v.literal("sent"),
+      v.literal("escalated")
     ),
   },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.id, { status: args.status });
+  },
+});
+
+export const escalate = mutation({
+  args: {
+    id: v.id("decisions"),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const d = await ctx.db.get(args.id);
+    if (!d) throw new Error("Decision not found");
+    if (d.status !== "pending") return { ok: false, reason: "not pending" };
+    await ctx.db.patch(args.id, {
+      status: "escalated",
+      escalated_reason: args.reason,
+    });
+    return { ok: true };
+  },
+});
+
+export const setIterations = mutation({
+  args: {
+    id: v.id("decisions"),
+    iterations: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, { iterations: args.iterations });
+  },
+});
+
+export const setExitInterviewEvent = mutation({
+  args: {
+    id: v.id("decisions"),
+    event_id: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, { exit_interview_event_id: args.event_id });
   },
 });
 

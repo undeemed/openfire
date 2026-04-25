@@ -14,6 +14,7 @@ import type * as decisions from "../decisions.js";
 import type * as emailHandler from "../emailHandler.js";
 import type * as employees from "../employees.js";
 import type * as messages from "../messages.js";
+import type * as toolCalls from "../toolCalls.js";
 
 import type {
   ApiFromModules,
@@ -28,6 +29,7 @@ declare const fullApi: ApiFromModules<{
   emailHandler: typeof emailHandler;
   employees: typeof employees;
   messages: typeof messages;
+  toolCalls: typeof toolCalls;
 }>;
 
 /**
