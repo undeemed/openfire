@@ -75,7 +75,8 @@ export const hasOpenDecision = query({
       (d) =>
         d.status === "pending" ||
         d.status === "approved" ||
-        d.status === "sent"
+        d.status === "sent" ||
+        d.status === "escalated"
     );
   },
 });
@@ -99,6 +100,43 @@ export const create = mutation({
     const id = await ctx.db.insert("decisions", {
       ...args,
       status: "pending",
+      created_at: Date.now(),
+    });
+
+    await ctx.db.patch(args.employee_id, { status: "pending" });
+
+    return id;
+  },
+});
+
+/**
+ * Insert a decision in the "escalated" state. Used when the agent loop
+ * calls escalate_to_human instead of propose_decision. Employee status
+ * flips to "pending" so the row appears in the manager's review queue
+ * with the escalation reason rather than a fire/spare verdict.
+ */
+export const createEscalated = mutation({
+  args: {
+    employee_id: v.id("employees"),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("decisions")
+      .withIndex("by_employee", (q) => q.eq("employee_id", args.employee_id))
+      .collect();
+    const open = existing.find(
+      (d) => d.status === "pending" || d.status === "escalated",
+    );
+    if (open) return open._id;
+
+    const id = await ctx.db.insert("decisions", {
+      employee_id: args.employee_id,
+      reasoning: args.reason,
+      decision: "spare",
+      email_draft: "",
+      status: "escalated",
+      escalated_reason: args.reason,
       created_at: Date.now(),
     });
 

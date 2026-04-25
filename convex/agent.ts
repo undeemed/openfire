@@ -26,6 +26,7 @@ export const runFireAgent = action({
     processed: number;
     flagged: number;
     skipped: number;
+    escalated: number;
   }> => {
     const { getEntityContext } = await import("../lib/nozomio");
     const { evaluateEmployee } = await import("../lib/claude");
@@ -40,6 +41,7 @@ export const runFireAgent = action({
 
     let flagged = 0;
     let skipped = 0;
+    let escalated = 0;
 
     for (const employee of employees) {
       // Idempotency guard: don't re-evaluate someone who already has an
@@ -56,35 +58,91 @@ export const runFireAgent = action({
         continue;
       }
 
-      const context = await getEntityContext(employee.nozomio_entity_id);
-      const evaluation = await evaluateEmployee(
+      // Lazy + memoized context fetch — the agent decides when (and if)
+      // to call fetch_nozomio_context. We cache so multiple calls within
+      // one loop don't hit Nozomio twice.
+      let cachedContext: Awaited<
+        ReturnType<typeof getEntityContext>
+      > | null = null;
+      const getNozomioContext = async () => {
+        if (!cachedContext) {
+          cachedContext = await getEntityContext(employee.nozomio_entity_id);
+        }
+        return cachedContext;
+      };
+
+      const searchEmployeeHistory = async (q: string) =>
+        await ctx.runQuery(api.agentHistory.searchForEmployee, {
+          employee_id: employee._id,
+          query: q,
+        });
+
+      const loop = await evaluateEmployee(
         {
           name: employee.name,
           email: employee.email,
           role: employee.role,
         },
-        context,
         criteria.map(
           (c: { name: string; description: string; weight: number }) => ({
             name: c.name,
             description: c.description,
             weight: c.weight,
           })
-        )
+        ),
+        { getNozomioContext, searchEmployeeHistory },
       );
 
-      await ctx.runMutation(api.decisions.create, {
-        employee_id: employee._id,
-        reasoning: evaluation.reasoning,
-        decision: evaluation.decision,
-        email_draft: evaluation.emailDraft,
-      });
+      let decisionId: string | null = null;
 
-      if (evaluation.decision === "fire") flagged++;
-      else skipped++;
+      if (loop.outcome.kind === "decision") {
+        decisionId = await ctx.runMutation(api.decisions.create, {
+          employee_id: employee._id,
+          reasoning: loop.outcome.result.reasoning,
+          decision: loop.outcome.result.decision,
+          email_draft: loop.outcome.result.emailDraft,
+        });
+        if (loop.outcome.result.decision === "fire") flagged++;
+        else skipped++;
+      } else if (loop.outcome.kind === "escalation") {
+        decisionId = await ctx.runMutation(api.decisions.createEscalated, {
+          employee_id: employee._id,
+          reason: loop.outcome.reason,
+        });
+        escalated++;
+      } else {
+        // Loop exhausted without a terminal tool call. Treat as escalation
+        // so a human looks at it rather than silently dropping the
+        // employee.
+        decisionId = await ctx.runMutation(api.decisions.createEscalated, {
+          employee_id: employee._id,
+          reason:
+            "Agent loop exhausted iterations without producing a verdict. Manual review required.",
+        });
+        escalated++;
+      }
+
+      if (decisionId && loop.toolCalls.length > 0) {
+        await ctx.runMutation(api.toolCalls.recordBatch, {
+          decision_id: decisionId as never,
+          calls: loop.toolCalls,
+        });
+      }
+
+      if (decisionId) {
+        await ctx.runMutation(api.decisions.setIterations, {
+          id: decisionId as never,
+          iterations: loop.iterations,
+        });
+      }
     }
 
-    return { processed: employees.length, flagged, skipped };
+    return {
+      processed: employees.length,
+      flagged,
+      skipped,
+      escalated,
+    };
   },
 });
 

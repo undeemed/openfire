@@ -40,3 +40,36 @@ export const record = mutation({
     });
   },
 });
+
+/**
+ * Insert many tool_call rows in one transaction. Called once at the end
+ * of the agent loop so a single decision's full trace lands atomically.
+ */
+export const recordBatch = mutation({
+  args: {
+    decision_id: v.id("decisions"),
+    calls: v.array(
+      v.object({
+        iteration: v.number(),
+        tool_name: v.string(),
+        input_json: v.string(),
+        output_json: v.string(),
+        is_error: v.boolean(),
+        duration_ms: v.number(),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    let inserted = 0;
+    for (const call of args.calls) {
+      await ctx.db.insert("tool_calls", {
+        ...call,
+        decision_id: args.decision_id,
+        created_at: now,
+      });
+      inserted++;
+    }
+    return { inserted };
+  },
+});
