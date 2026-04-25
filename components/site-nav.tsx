@@ -3,52 +3,56 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Flame } from "lucide-react";
 
 const links = [
-  { href: "/", label: "Pending Departures" },
-  { href: "/pyre", label: "The Pyre 🔥" },
+  { href: "/", label: "Active Roster" },
+  { href: "/pyre", label: "The Pyre" },
   { href: "/criteria", label: "Criteria" },
 ];
 
 export function SiteNav() {
   const pathname = usePathname();
   return (
-    <header className="border-b border-zinc-900/80 bg-black/60 backdrop-blur sticky top-0 z-30">
-      <div className="mx-auto max-w-6xl px-6 py-4 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2 group">
-          <div className="relative">
-            <Flame className="h-6 w-6 text-orange-500 transition group-hover:text-orange-400 drop-shadow-[0_0_10px_rgba(234,88,12,0.6)]" />
-          </div>
-          <div className="leading-tight">
-            <div className="text-base font-bold tracking-tight text-zinc-100">
-              OpenFire
-            </div>
-            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">
-              The Claw
-            </div>
-          </div>
+    <header className="sticky top-0 z-30 bg-[var(--bg)]/95 backdrop-blur-md border-b border-[var(--border)]">
+      <div className="h-[2px] bg-gradient-to-r from-[var(--accent-dim)] via-[var(--accent)] to-[var(--accent-dim)]" />
+      <div className="mx-auto max-w-6xl px-6 flex items-stretch">
+        <Link href="/" className="group flex items-baseline gap-3 py-3 pr-6 border-r border-[var(--border)] mr-2">
+          <span className="font-display text-lg font-semibold text-[var(--text)] group-hover:text-[var(--accent-bright)] transition-colors leading-none">
+            OpenFire
+          </span>
+          <span className="text-[8px] font-mono tracking-[0.3em] text-[var(--text-dim)] uppercase">
+            Protocol
+          </span>
         </Link>
 
-        <nav className="flex items-center gap-1">
+        <nav className="flex items-stretch">
           {links.map((l) => {
-            const active = pathname === l.href || (l.href !== "/" && pathname.startsWith(l.href));
+            const active = l.href === "/" ? pathname === "/" : pathname.startsWith(l.href);
             return (
               <Link
                 key={l.href}
                 href={l.href}
                 className={cn(
-                  "px-3 py-1.5 rounded-md text-sm transition",
+                  "relative flex items-center px-4 text-[11px] font-mono tracking-[0.14em] uppercase transition-colors border-r border-[var(--border)]",
                   active
-                    ? "bg-orange-950/40 text-orange-200 border border-orange-800/40"
-                    : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"
+                    ? "text-[var(--text)] bg-[var(--surface-raised)]"
+                    : "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface)]"
                 )}
               >
+                {active && (
+                  <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-[var(--accent)]" />
+                )}
                 {l.label}
               </Link>
             );
           })}
         </nav>
+
+        <div className="ml-auto flex items-center">
+          <div className="text-[8px] font-mono tracking-[0.2em] text-[var(--text-dim)] uppercase">
+            The Claw · Active
+          </div>
+        </div>
       </div>
     </header>
   );

@@ -1,11 +1,59 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable */
 /**
- * Generated `api` reference placeholder.
+ * Generated `api` utility.
  *
- * Run `npx convex dev` (or `bunx convex dev`) to regenerate the real
- * type-safe API. Until then we use a permissive `any` type so the
- * Next.js build doesn't fail.
+ * THIS CODE IS AUTOMATICALLY GENERATED.
+ *
+ * To regenerate, run `npx convex dev`.
+ * @module
  */
 
-export declare const api: any;
-export declare const internal: any;
+import type * as agent from "../agent.js";
+import type * as criteria from "../criteria.js";
+import type * as decisions from "../decisions.js";
+import type * as emailHandler from "../emailHandler.js";
+import type * as employees from "../employees.js";
+import type * as messages from "../messages.js";
+
+import type {
+  ApiFromModules,
+  FilterApi,
+  FunctionReference,
+} from "convex/server";
+
+declare const fullApi: ApiFromModules<{
+  agent: typeof agent;
+  criteria: typeof criteria;
+  decisions: typeof decisions;
+  emailHandler: typeof emailHandler;
+  employees: typeof employees;
+  messages: typeof messages;
+}>;
+
+/**
+ * A utility for referencing Convex functions in your app's public API.
+ *
+ * Usage:
+ * ```js
+ * const myFunctionReference = api.myModule.myFunction;
+ * ```
+ */
+export declare const api: FilterApi<
+  typeof fullApi,
+  FunctionReference<any, "public">
+>;
+
+/**
+ * A utility for referencing Convex functions in your app's internal API.
+ *
+ * Usage:
+ * ```js
+ * const myFunctionReference = internal.myModule.myFunction;
+ * ```
+ */
+export declare const internal: FilterApi<
+  typeof fullApi,
+  FunctionReference<any, "internal">
+>;
+
+export declare const components: {};

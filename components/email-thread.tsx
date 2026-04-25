@@ -1,6 +1,5 @@
 "use client";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 export interface EmailMessage {
@@ -15,46 +14,45 @@ export interface EmailMessage {
 export function EmailThread({ messages }: { messages: EmailMessage[] }) {
   if (!messages.length) {
     return (
-      <Card>
-        <CardContent className="py-10 text-center text-zinc-500">
-          No emails in this thread yet.
-        </CardContent>
-      </Card>
+      <div className="border border-[var(--border)] bg-[var(--surface)] p-10 text-center">
+        <p className="text-[11px] font-mono text-[var(--text-dim)]">No emails in this thread yet.</p>
+      </div>
     );
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {messages.map((m) => (
-        <Card
+        <div
           key={m._id}
-          className={
-            m.direction === "outbound"
-              ? "border-orange-900/30"
-              : "border-sky-900/30"
-          }
+          className="border border-[var(--border)] bg-[var(--surface)] flex overflow-hidden"
+          style={{
+            borderLeftColor: m.direction === "outbound" ? "var(--accent)" : "var(--blue)",
+          }}
         >
-          <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
-            <div>
-              <CardTitle className="text-sm">{m.subject}</CardTitle>
-              <div className="text-xs text-zinc-500 mt-1">
-                from{" "}
-                <span className="font-mono text-zinc-400">{m.from}</span> ·{" "}
-                {new Date(m.created_at).toLocaleString()}
+          <div
+            className="w-[3px] shrink-0"
+            style={{
+              background: m.direction === "outbound" ? "var(--accent)" : "var(--blue)",
+            }}
+          />
+          <div className="flex-1 p-4 min-w-0">
+            <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+              <div>
+                <p className="text-[11px] font-mono font-semibold text-[var(--text)]">{m.subject}</p>
+                <p className="text-[9px] font-mono text-[var(--text-dim)] mt-0.5">
+                  {m.from} · {new Date(m.created_at).toLocaleString()}
+                </p>
               </div>
+              <Badge variant={m.direction === "outbound" ? "active" : "spared"}>
+                {m.direction === "outbound" ? "Sent" : "Reply"}
+              </Badge>
             </div>
-            <Badge
-              variant={m.direction === "outbound" ? "fired" : "active"}
-            >
-              {m.direction === "outbound" ? "Sent by The Claw" : "Reply"}
-            </Badge>
-          </CardHeader>
-          <CardContent>
-            <pre className="whitespace-pre-wrap font-sans text-sm text-zinc-300 leading-relaxed">
+            <pre className="whitespace-pre-wrap text-[11px] font-mono text-[var(--text-muted)] leading-relaxed">
 {m.body}
             </pre>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       ))}
     </div>
   );

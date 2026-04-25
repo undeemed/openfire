@@ -5,29 +5,30 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-[10px] font-mono font-semibold tracking-[0.16em] uppercase focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] disabled:pointer-events-none disabled:opacity-40 active:scale-[0.97]",
   {
     variants: {
       variant: {
         default:
-          "bg-orange-600 text-white hover:bg-orange-500 shadow-[0_0_24px_-6px_rgba(234,88,12,0.55)]",
+          "bg-[var(--accent)] text-[var(--text)] hover:bg-[var(--accent-bright)] border border-[var(--accent-bright)]/60 shadow-[0_0_18px_-4px_var(--accent-glow)] transition-[background-color,box-shadow,transform] duration-150",
         fire:
-          "bg-gradient-to-b from-orange-500 to-red-600 text-white hover:from-orange-400 hover:to-red-500 shadow-[0_0_28px_-4px_rgba(239,68,68,0.65)]",
+          "bg-[var(--accent)] text-[var(--text)] hover:bg-[var(--accent-bright)] border border-[var(--accent)] shadow-[0_0_14px_-3px_var(--accent-glow)] hover:shadow-[0_0_22px_-2px_var(--accent-glow)] transition-[background-color,box-shadow,transform] duration-150",
         secondary:
-          "bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700",
-        ghost: "hover:bg-zinc-800/60 text-zinc-200",
+          "bg-[var(--surface-raised)] text-[var(--text)] hover:bg-[var(--surface-hover)] border border-[var(--border)] transition-[background-color,transform] duration-150",
+        ghost:
+          "hover:bg-[var(--surface-raised)] text-[var(--text-muted)] hover:text-[var(--text)] border border-transparent transition-[background-color,color,transform] duration-150",
         outline:
-          "border border-zinc-700 bg-transparent text-zinc-200 hover:bg-zinc-800/40",
+          "border border-[var(--border)] bg-transparent text-[var(--text-muted)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)] transition-[background-color,color,transform] duration-150",
         destructive:
-          "bg-red-700 text-white hover:bg-red-600",
+          "bg-[var(--accent)] text-[var(--text)] hover:bg-[var(--accent-bright)] border border-[var(--accent)] transition-[background-color,transform] duration-150",
         success:
-          "bg-emerald-700 text-white hover:bg-emerald-600",
+          "bg-[var(--green)] text-[var(--text)] hover:bg-[#2d7d55] border border-[var(--green)] transition-[background-color,transform] duration-150",
       },
       size: {
-        default: "h-10 px-4 py-2",
-        sm: "h-8 px-3 text-xs",
-        lg: "h-12 px-6 text-base",
-        icon: "h-9 w-9",
+        default: "h-9 px-4 py-2",
+        sm: "h-7 px-3",
+        lg: "h-11 px-6 text-xs",
+        icon: "h-8 w-8",
       },
     },
     defaultVariants: {
@@ -42,15 +43,13 @@ export interface ButtonProps
     VariantProps<typeof buttonVariants> {}
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, ...props }, ref) => {
-    return (
-      <button
-        ref={ref}
-        className={cn(buttonVariants({ variant, size, className }))}
-        {...props}
-      />
-    );
-  }
+  ({ className, variant, size, ...props }, ref) => (
+    <button
+      ref={ref}
+      className={cn(buttonVariants({ variant, size, className }))}
+      {...props}
+    />
+  )
 );
 Button.displayName = "Button";
 

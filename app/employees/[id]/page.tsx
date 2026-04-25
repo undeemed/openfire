@@ -3,7 +3,6 @@
 import { useState, use } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DecisionModal, DecisionModalData } from "@/components/decision-modal";
@@ -30,6 +29,13 @@ interface Decision {
   created_at: number;
 }
 
+const statusVariant: Record<string, "active" | "pending" | "fired" | "spared"> = {
+  active: "active",
+  pending: "pending",
+  fired: "fired",
+  spared: "spared",
+};
+
 export default function EmployeeDetailPage({
   params,
 }: {
@@ -37,9 +43,7 @@ export default function EmployeeDetailPage({
 }) {
   const { id } = use(params);
   const employee = useQuery(api.employees.get, { id: id as never });
-  const decisions = useQuery(api.decisions.listForEmployee, {
-    employee_id: id as never,
-  });
+  const decisions = useQuery(api.decisions.listForEmployee, { employee_id: id as never });
   const latestDecision = (decisions ?? [])[0] as Decision | undefined;
   const messages = useQuery(
     api.messages.listForDecision,
@@ -49,24 +53,21 @@ export default function EmployeeDetailPage({
 
   if (employee === undefined) {
     return (
-      <Card>
-        <CardContent className="py-16 text-center text-zinc-500">
-          <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" />
-          Loading…
-        </CardContent>
-      </Card>
+      <div className="border border-[var(--border)] bg-[var(--surface)] p-16 text-center">
+        <Loader2 className="h-4 w-4 animate-spin mx-auto mb-3 text-[var(--text-dim)]" />
+        <p className="text-[10px] font-mono text-[var(--text-dim)] tracking-[0.2em] uppercase">Loading dossier…</p>
+      </div>
     );
   }
+
   if (employee === null) {
     return (
-      <Card>
-        <CardContent className="py-12 text-center">
-          <p className="text-zinc-300">Employee not found.</p>
-          <Link href="/" className="text-orange-400 hover:underline text-sm mt-2 inline-block">
-            ← Back to roster
-          </Link>
-        </CardContent>
-      </Card>
+      <div className="border border-[var(--border)] bg-[var(--surface)] p-12 text-center">
+        <p className="font-display text-lg text-[var(--text)] mb-3">Dossier not found.</p>
+        <Link href="/" className="text-[10px] font-mono text-[var(--accent)] hover:text-[var(--accent-bright)] tracking-[0.15em] uppercase">
+          ← Return to roster
+        </Link>
+      </div>
     );
   }
 
@@ -78,103 +79,93 @@ export default function EmployeeDetailPage({
     <div className="space-y-8">
       <Link
         href="/"
-        className="text-sm text-zinc-500 hover:text-orange-400 transition"
+        className="inline-block text-[9px] font-mono tracking-[0.2em] text-[var(--text-dim)] hover:text-[var(--accent)] transition-colors uppercase"
       >
-        ← Back to roster
+        ← Roster
       </Link>
 
-      <header className="space-y-2">
-        <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="text-3xl font-bold tracking-tight">{emp.name}</h1>
-          <Badge
-            variant={
-              emp.status === "fired"
-                ? "fired"
-                : emp.status === "pending"
-                  ? "pending"
-                  : emp.status === "spared"
-                    ? "spared"
-                    : "active"
-            }
-          >
-            {emp.status}
-          </Badge>
+      {/* Employee header */}
+      <section className="border border-[var(--border)] bg-[var(--surface)] flex overflow-hidden">
+        <div className={`w-[3px] shrink-0 ${
+          emp.status === "fired" ? "bg-[var(--text-dim)]" :
+          emp.status === "pending" ? "bg-[var(--amber)]" :
+          emp.status === "spared" ? "bg-[var(--blue)]" :
+          "bg-[var(--accent)]"
+        }`} />
+        <div className="flex-1 p-6">
+          <div className="text-[8px] font-mono tracking-[0.25em] text-[var(--text-dim)] uppercase mb-3">
+            Personnel File · #{emp._id.slice(-6).toUpperCase()}
+          </div>
+          <div className="flex items-start gap-3 flex-wrap mb-4">
+            <h1 className="font-display text-3xl font-semibold text-[var(--text)] leading-none">
+              {emp.name}
+            </h1>
+            <Badge variant={statusVariant[emp.status]}>{emp.status}</Badge>
+          </div>
+          <div className="space-y-1.5">
+            <InfoRow label="Role" value={emp.role} />
+            <InfoRow label="Email" value={emp.email} />
+            <InfoRow label="Nozomio" value={emp.nozomio_entity_id} />
+          </div>
         </div>
-        <p className="text-zinc-400">{emp.role}</p>
-        <div className="text-xs text-zinc-500 font-mono">{emp.email}</div>
-        <div className="text-[10px] uppercase tracking-wider text-zinc-600">
-          nozomio: {emp.nozomio_entity_id}
-        </div>
-      </header>
+      </section>
 
+      {/* Latest decision */}
       {latestDecision ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              Latest decision
-              <Badge
-                variant={
-                  latestDecision.status === "sent"
-                    ? "fired"
-                    : latestDecision.status === "rejected"
-                      ? "spared"
-                      : latestDecision.status === "approved"
-                        ? "pending"
-                        : "pending"
-                }
-              >
-                {latestDecision.status}
-              </Badge>
-              <Badge
-                variant={latestDecision.decision === "fire" ? "fired" : "spared"}
-              >
-                {latestDecision.decision}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <div className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
-                Reasoning
+        <section>
+          <SectionLabel>Latest Decision</SectionLabel>
+          <div className="border border-[var(--border)] bg-[var(--surface)] flex overflow-hidden">
+            <div className={`w-[3px] shrink-0 ${latestDecision.decision === "fire" ? "bg-[var(--accent)]" : "bg-[var(--blue)]"}`} />
+            <div className="flex-1 p-5 space-y-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge variant={latestDecision.decision === "fire" ? "active" : "spared"}>
+                  {latestDecision.decision === "fire" ? "Terminate" : "Spare"}
+                </Badge>
+                <Badge variant={
+                  latestDecision.status === "sent" ? "fired" :
+                  latestDecision.status === "rejected" ? "spared" : "pending"
+                }>
+                  {latestDecision.status}
+                </Badge>
+                <span className="text-[9px] font-mono text-[var(--text-dim)] ml-auto">
+                  {new Date(latestDecision.created_at).toLocaleString()}
+                </span>
               </div>
-              <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">
-                {latestDecision.reasoning}
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={() => setModalOpen(true)} variant="secondary">
-                Review email draft
+              <div>
+                <div className="text-[8px] font-mono tracking-[0.2em] text-[var(--text-dim)] uppercase mb-2">Reasoning</div>
+                <p className="text-[11px] font-mono text-[var(--text-muted)] leading-relaxed whitespace-pre-wrap">
+                  {latestDecision.reasoning}
+                </p>
+              </div>
+              <Button variant="secondary" size="sm" onClick={() => setModalOpen(true)}>
+                Review Email Draft →
               </Button>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       ) : null}
 
-      <section className="space-y-3">
-        <h2 className="text-sm uppercase tracking-widest text-zinc-400">
-          Email thread
-        </h2>
+      {/* Email thread */}
+      <section>
+        <SectionLabel>Email Thread</SectionLabel>
         <EmailThread messages={msgs} />
       </section>
 
+      {/* Decision history */}
       {list.length > 1 ? (
-        <section className="space-y-3">
-          <h2 className="text-sm uppercase tracking-widest text-zinc-400">
-            Decision history
-          </h2>
+        <section>
+          <SectionLabel>Decision History</SectionLabel>
           <div className="space-y-2">
             {list.slice(1).map((d) => (
-              <Card key={d._id}>
-                <CardContent className="p-4 flex items-center justify-between">
-                  <div className="text-xs text-zinc-500">
-                    {new Date(d.created_at).toLocaleString()}
-                  </div>
-                  <div className="flex gap-2">
-                    <Badge variant="default">{d.decision}</Badge>
-                    <Badge variant="default">{d.status}</Badge>
-                  </div>
-                </CardContent>
-              </Card>
+              <div key={d._id} className="border border-[var(--border)] bg-[var(--surface)] p-4 flex items-center justify-between">
+                <span className="text-[10px] font-mono text-[var(--text-dim)]">
+                  {new Date(d.created_at).toLocaleString()}
+                </span>
+                <div className="flex gap-2">
+                  <Badge variant={d.decision === "fire" ? "active" : "spared"}>{d.decision}</Badge>
+                  <Badge>{d.status}</Badge>
+                </div>
+              </div>
             ))}
           </div>
         </section>
@@ -186,6 +177,24 @@ export default function EmployeeDetailPage({
         decision={(latestDecision as DecisionModalData) ?? null}
         employeeName={emp.name}
       />
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-3">
+      <span className="text-[8px] font-mono tracking-[0.18em] text-[var(--text-dim)] uppercase w-16 shrink-0">{label}</span>
+      <span className="text-[11px] font-mono text-[var(--text-muted)]">{value}</span>
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 mb-3">
+      <div className="h-[1px] w-4 bg-[var(--border-raised)]" />
+      <span className="text-[9px] font-mono tracking-[0.22em] text-[var(--text-dim)] uppercase">{children}</span>
     </div>
   );
 }
