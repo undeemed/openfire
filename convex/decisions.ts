@@ -1,0 +1,173 @@
+import { mutation, query } from "./_generated/server";
+import { v } from "convex/values";
+
+export const list = query({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.db.query("decisions").order("desc").collect();
+  },
+});
+
+export const listPending = query({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.db
+      .query("decisions")
+      .withIndex("by_status", (q) => q.eq("status", "pending"))
+      .order("desc")
+      .collect();
+  },
+});
+
+export const listForEmployee = query({
+  args: { employee_id: v.id("employees") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("decisions")
+      .withIndex("by_employee", (q) => q.eq("employee_id", args.employee_id))
+      .order("desc")
+      .collect();
+  },
+});
+
+export const get = query({
+  args: { id: v.id("decisions") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.id);
+  },
+});
+
+export const getByThreadId = query({
+  args: { thread_id: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("decisions")
+      .withIndex("by_thread", (q) => q.eq("agentmail_thread_id", args.thread_id))
+      .first();
+  },
+});
+
+export const getActivePendingForEmployee = query({
+  args: { employee_id: v.id("employees") },
+  handler: async (ctx, args) => {
+    const all = await ctx.db
+      .query("decisions")
+      .withIndex("by_employee", (q) => q.eq("employee_id", args.employee_id))
+      .collect();
+    return all.find((d) => d.status === "pending") || null;
+  },
+});
+
+/**
+ * Returns true if the employee has any non-rejected open decision —
+ * pending, approved, or sent. Used as the idempotency guard inside the
+ * fire-agent loop so we never re-evaluate someone whose fate is already
+ * sealed.
+ */
+export const hasOpenDecision = query({
+  args: { employee_id: v.id("employees") },
+  handler: async (ctx, args) => {
+    const all = await ctx.db
+      .query("decisions")
+      .withIndex("by_employee", (q) => q.eq("employee_id", args.employee_id))
+      .collect();
+    return all.some(
+      (d) =>
+        d.status === "pending" ||
+        d.status === "approved" ||
+        d.status === "sent"
+    );
+  },
+});
+
+export const create = mutation({
+  args: {
+    employee_id: v.id("employees"),
+    reasoning: v.string(),
+    decision: v.union(v.literal("fire"), v.literal("spare")),
+    email_draft: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Idempotency: skip if there's already a pending decision for this employee
+    const existing = await ctx.db
+      .query("decisions")
+      .withIndex("by_employee", (q) => q.eq("employee_id", args.employee_id))
+      .collect();
+    const pending = existing.find((d) => d.status === "pending");
+    if (pending) return pending._id;
+
+    const id = await ctx.db.insert("decisions", {
+      ...args,
+      status: "pending",
+      created_at: Date.now(),
+    });
+
+    await ctx.db.patch(args.employee_id, { status: "pending" });
+
+    return id;
+  },
+});
+
+export const setStatus = mutation({
+  args: {
+    id: v.id("decisions"),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("approved"),
+      v.literal("rejected"),
+      v.literal("sent")
+    ),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, { status: args.status });
+  },
+});
+
+export const setThreadId = mutation({
+  args: {
+    id: v.id("decisions"),
+    thread_id: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, { agentmail_thread_id: args.thread_id });
+  },
+});
+
+export const approve = mutation({
+  args: { id: v.id("decisions") },
+  handler: async (ctx, args) => {
+    const d = await ctx.db.get(args.id);
+    if (!d) throw new Error("Decision not found");
+    if (d.status !== "pending") return { ok: false, reason: "not pending" };
+    await ctx.db.patch(args.id, { status: "approved" });
+    return { ok: true, decision: d };
+  },
+});
+
+export const reject = mutation({
+  args: { id: v.id("decisions") },
+  handler: async (ctx, args) => {
+    const d = await ctx.db.get(args.id);
+    if (!d) throw new Error("Decision not found");
+    if (d.status !== "pending") return { ok: false, reason: "not pending" };
+    await ctx.db.patch(args.id, { status: "rejected" });
+    await ctx.db.patch(d.employee_id, { status: "spared" });
+    return { ok: true, decision: d };
+  },
+});
+
+export const markSent = mutation({
+  args: {
+    id: v.id("decisions"),
+    thread_id: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const d = await ctx.db.get(args.id);
+    if (!d) throw new Error("Decision not found");
+    await ctx.db.patch(args.id, {
+      status: "sent",
+      ...(args.thread_id ? { agentmail_thread_id: args.thread_id } : {}),
+    });
+    await ctx.db.patch(d.employee_id, { status: "fired" });
+  },
+});
