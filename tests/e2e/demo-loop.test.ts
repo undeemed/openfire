@@ -252,14 +252,16 @@ describe("e2e demo loop", () => {
       managerRequest: "loop in @ada and @ben for the payroll migration",
       directory,
       thread_id: "thr_orch",
-      dispatch: async (agent, instruction) => {
+      dispatch: async (agent, task) => {
         dispatched.push(agent.name);
         // The dispatch fn must NOT receive the raw thread; only the scoped
         // instruction the orchestrator built.
-        expect(instruction).not.toContain("orchestrator demo internals");
+        expect(task.instruction).not.toContain("orchestrator demo internals");
         return {
           agent: agent.name,
           output: `${agent.name} handled the subtask.`,
+          structured: {},
+          cited_source_ids: [],
           sources: ["src_demo_1"],
         };
       },

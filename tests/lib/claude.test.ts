@@ -29,6 +29,7 @@ describe("evaluateEmployee (demo mode)", () => {
     }
     expect(Array.isArray(result.toolCalls)).toBe(true);
   });
+
 });
 
 describe("generateOnboardingEmail (demo mode)", () => {
@@ -116,6 +117,26 @@ describe("orchestratorPlan (demo mode)", () => {
   test("returns empty subtasks when directory is empty", async () => {
     const plan = await orchestratorPlan("nothing", []);
     expect(plan.subtasks).toEqual([]);
+    expect(plan.topology).toBe("single");
+  });
+
+  test("includes topology field on the plan", async () => {
+    const plan = await orchestratorPlan("loop ada in", [
+      { name: "Ada", role: "infra", skills: ["answer"] },
+    ]);
+    expect(["parallel", "pipeline", "single"]).toContain(plan.topology);
+  });
+
+  test("each subtask carries a structured WorkerTask", async () => {
+    const plan = await orchestratorPlan("payroll question", [
+      { name: "Ada", role: "infra", skills: ["answer"] },
+    ]);
+    for (const st of plan.subtasks) {
+      expect(typeof st.task.instruction).toBe("string");
+      expect(st.task.instruction.length).toBeGreaterThan(0);
+      expect(Array.isArray(st.task.data_query.namespaces)).toBe(true);
+      expect(Array.isArray(st.task.output_schema.required_fields)).toBe(true);
+    }
   });
 });
 
