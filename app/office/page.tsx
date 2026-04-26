@@ -100,8 +100,8 @@ function OfficePageInner() {
       : realEntities;
 
   return (
-    <div className="space-y-6">
-      <section className="pb-6 border-b border-[var(--border)]">
+    <div className="space-y-6 flex flex-col items-center text-center">
+      <section className="pb-6 border-b border-[var(--border)] w-full max-w-3xl">
         <div className="text-[8px] font-mono tracking-[0.3em] text-[var(--text-dim)] uppercase mb-2">
           Openfire · Live View
         </div>
@@ -112,7 +112,7 @@ function OfficePageInner() {
           Watch The Claw move people in real time. Court tiles in the
           center; exit door bottom-right. {demo ? "(demo mode)" : ""}
         </p>
-        <div className="mt-3 flex gap-3 text-[10px] font-mono">
+        <div className="mt-3 flex justify-center gap-3 text-[10px] font-mono">
           <Link
             href={demo ? "/office" : "/office?demo=1"}
             className="text-[var(--accent)] hover:text-[var(--accent-bright)] tracking-[0.15em] uppercase"
@@ -128,9 +128,16 @@ function OfficePageInner() {
         </div>
       </section>
 
-      <OfficeWithDossier entities={entities} />
+      {/* Break out of the root <main>'s max-w-6xl so the 1440px canvas
+          actually centers on the viewport instead of being right-clipped. */}
+      <div
+        className="flex justify-center"
+        style={{ width: "100vw", marginLeft: "calc(50% - 50vw)" }}
+      >
+        <OfficeWithDossier entities={entities} />
+      </div>
 
-      <section className="grid sm:grid-cols-4 gap-3 text-[10px] font-mono">
+      <section className="grid sm:grid-cols-4 gap-3 text-[10px] font-mono w-full max-w-3xl">
         <Legend swatch="active" label="Desk · idle/typing" />
         <Legend swatch="pending" label="Court · awaiting verdict" />
         <Legend swatch="fired" label="Exit · grayed out" />
