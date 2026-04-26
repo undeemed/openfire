@@ -30,7 +30,10 @@ interface Decision {
   status: "pending" | "approved" | "rejected" | "sent" | "escalated";
   created_at: number;
   escalated_reason?: string;
+  reply_escalated_reason?: string;
   exit_interview_event_id?: string;
+  exit_interview_start?: string;
+  exit_interview_end?: string;
   iterations?: number;
 }
 
@@ -171,7 +174,10 @@ export default function EmployeeDetailPage({
         </section>
       ) : null}
 
-      {/* Escalation banner — shows when the agent bailed out */}
+      {/* Escalation banner — shows when the eval agent bailed out OR
+          when a reply-time loop escalated/exhausted. The two are
+          distinct signals (eval-time vs post-send) so render them
+          separately when both are set. */}
       {latestDecision?.status === "escalated" ? (
         <section className="border border-[var(--amber)]/60 bg-[var(--amber-dim)]/15 p-4 flex items-start gap-3">
           <AlertTriangle className="h-3.5 w-3.5 text-[var(--amber)] shrink-0 mt-0.5" />
@@ -181,6 +187,20 @@ export default function EmployeeDetailPage({
             </div>
             <p className="text-[11px] font-mono text-[var(--text-muted)] leading-relaxed whitespace-pre-wrap">
               {latestDecision.escalated_reason ?? latestDecision.reasoning}
+            </p>
+          </div>
+        </section>
+      ) : null}
+
+      {latestDecision?.reply_escalated_reason ? (
+        <section className="border border-[var(--amber)]/60 bg-[var(--amber-dim)]/15 p-4 flex items-start gap-3">
+          <AlertTriangle className="h-3.5 w-3.5 text-[var(--amber)] shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[8px] font-mono tracking-[0.22em] text-[var(--amber)] uppercase mb-1">
+              Reply Escalated
+            </div>
+            <p className="text-[11px] font-mono text-[var(--text-muted)] leading-relaxed whitespace-pre-wrap">
+              {latestDecision.reply_escalated_reason}
             </p>
           </div>
         </section>
