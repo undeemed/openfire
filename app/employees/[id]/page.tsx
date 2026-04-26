@@ -7,8 +7,9 @@ import { api } from "@/convex/_generated/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DecisionModal, DecisionModalData } from "@/components/decision-modal";
+import { DecisionTrace } from "@/components/decision-trace";
 import { EmailThread, EmailMessage } from "@/components/email-thread";
-import { Loader2 } from "lucide-react";
+import { Loader2, AlertTriangle } from "lucide-react";
 import Link from "next/link";
 
 interface Employee {
@@ -26,8 +27,11 @@ interface Decision {
   reasoning: string;
   decision: "fire" | "spare";
   email_draft: string;
-  status: "pending" | "approved" | "rejected" | "sent";
+  status: "pending" | "approved" | "rejected" | "sent" | "escalated";
   created_at: number;
+  escalated_reason?: string;
+  exit_interview_event_id?: string;
+  iterations?: number;
 }
 
 const statusVariant: Record<string, "active" | "pending" | "fired" | "spared"> = {
@@ -167,23 +171,59 @@ export default function EmployeeDetailPage({
         </section>
       ) : null}
 
+      {/* Escalation banner — shows when the agent bailed out */}
+      {latestDecision?.status === "escalated" ? (
+        <section className="border border-[var(--amber)]/60 bg-[var(--amber-dim)]/15 p-4 flex items-start gap-3">
+          <AlertTriangle className="h-3.5 w-3.5 text-[var(--amber)] shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[8px] font-mono tracking-[0.22em] text-[var(--amber)] uppercase mb-1">
+              Escalated to Human
+            </div>
+            <p className="text-[11px] font-mono text-[var(--text-muted)] leading-relaxed whitespace-pre-wrap">
+              {latestDecision.escalated_reason ?? latestDecision.reasoning}
+            </p>
+          </div>
+        </section>
+      ) : null}
+
       {/* Latest decision */}
       {latestDecision ? (
         <section>
           <SectionLabel>Latest Decision</SectionLabel>
           <div className="border border-[var(--border)] bg-[var(--surface)] flex overflow-hidden">
-            <div className={`w-[3px] shrink-0 ${latestDecision.decision === "fire" ? "bg-[var(--accent)]" : "bg-[var(--blue)]"}`} />
+            <div className={`w-[3px] shrink-0 ${
+              latestDecision.status === "escalated" ? "bg-[var(--amber)]" :
+              latestDecision.decision === "fire" ? "bg-[var(--accent)]" :
+              "bg-[var(--blue)]"
+            }`} />
             <div className="flex-1 p-5 space-y-4">
               <div className="flex items-center gap-2 flex-wrap">
-                <Badge variant={latestDecision.decision === "fire" ? "active" : "spared"}>
-                  {latestDecision.decision === "fire" ? "Terminate" : "Spare"}
+                <Badge variant={
+                  latestDecision.status === "escalated" ? "pending" :
+                  latestDecision.decision === "fire" ? "active" :
+                  "spared"
+                }>
+                  {latestDecision.status === "escalated" ? "Escalated" :
+                   latestDecision.decision === "fire" ? "Terminate" : "Spare"}
                 </Badge>
                 <Badge variant={
                   latestDecision.status === "sent" ? "fired" :
-                  latestDecision.status === "rejected" ? "spared" : "pending"
+                  latestDecision.status === "rejected" ? "spared" :
+                  latestDecision.status === "escalated" ? "pending" :
+                  "pending"
                 }>
                   {latestDecision.status}
                 </Badge>
+                {latestDecision.iterations !== undefined ? (
+                  <span className="text-[8px] font-mono tracking-[0.18em] text-[var(--text-dim)] uppercase border border-[var(--border)] px-1.5 py-0.5">
+                    {latestDecision.iterations} iter
+                  </span>
+                ) : null}
+                {latestDecision.exit_interview_event_id ? (
+                  <span className="text-[8px] font-mono tracking-[0.18em] text-[var(--green)] uppercase border border-[var(--green)]/40 px-1.5 py-0.5">
+                    Interview Booked
+                  </span>
+                ) : null}
                 <span className="text-[9px] font-mono text-[var(--text-dim)] ml-auto">
                   {new Date(latestDecision.created_at).toLocaleString()}
                 </span>
@@ -194,11 +234,21 @@ export default function EmployeeDetailPage({
                   {latestDecision.reasoning}
                 </p>
               </div>
-              <Button variant="secondary" size="sm" onClick={() => setModalOpen(true)}>
-                Review Email Draft →
-              </Button>
+              {latestDecision.status !== "escalated" ? (
+                <Button variant="secondary" size="sm" onClick={() => setModalOpen(true)}>
+                  Review Email Draft →
+                </Button>
+              ) : null}
             </div>
           </div>
+        </section>
+      ) : null}
+
+      {/* Reasoning trace */}
+      {latestDecision ? (
+        <section>
+          <SectionLabel>Reasoning Trace</SectionLabel>
+          <DecisionTrace decisionId={latestDecision._id} />
         </section>
       ) : null}
 

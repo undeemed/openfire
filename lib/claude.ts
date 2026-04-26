@@ -20,6 +20,13 @@ import {
   type ToolDeps,
   type TerminalToolResult,
 } from "./agent-tools";
+import {
+  REPLY_TOOL_SCHEMAS,
+  runReplyTool,
+  type ReplyToolDeps,
+  type ReplyTerminalResult,
+} from "./reply-tools";
+import type { ScheduleResult } from "./calendar";
 
 const MODEL = "claude-sonnet-4-6-20250929";
 const MAX_ITERATIONS = 8;
@@ -332,9 +339,13 @@ The Claw, on behalf of OpenFire HR`;
 }
 
 // ---------------------------------------------------------------------------
-// Reply handling — still single-shot. Will get its own tool loop in a
-// later PR (book_exit_interview, etc.).
+// Reply handling — tool-use loop. The agent must call propose_reply or
+// escalate_reply to terminate. book_exit_interview is the only way the
+// loop can schedule a calendar event, replacing the regex hack that used
+// to live in convex/emailHandler.ts.
 // ---------------------------------------------------------------------------
+
+const REPLY_MAX_ITERATIONS = 4;
 
 export interface ThreadTurn {
   direction: "inbound" | "outbound";
@@ -348,27 +359,55 @@ export interface ReplyResult {
   subject: string;
 }
 
-const SYSTEM_PROMPT_REPLY = `You are "The Claw", an AI HR agent handling the aftermath of a termination email. The employee has just replied. Your job is to respond with empathy but firmness.
+export type ReplyOutcome =
+  | { kind: "reply"; subject: string; reply: string }
+  | { kind: "escalation"; reason: string }
+  | { kind: "exhausted"; lastText: string };
 
-Rules:
+export interface ReplyLoopResult {
+  outcome: ReplyOutcome;
+  iterations: number;
+  toolCalls: ToolCallTrace[];
+  bookedExitInterview?: ScheduleResult;
+  iterationOffset: number;
+}
+
+const SYSTEM_PROMPT_REPLY = `You are "The Claw", an AI HR agent handling replies to a termination email. The employee has just written back. Use tools to compose a thoughtful reply — and to book an exit interview ONLY when the employee explicitly asks for one.
+
+Workflow:
+1. Read the inbound message and the prior thread.
+2. Decide whether the message asks for a meeting, asks "why me?", expresses anger, or signals legal/medical/HR-protected concerns.
+3. If legal/medical/threats/abuse → call escalate_reply. Do not propose_reply in the same turn — escalation is terminal.
+4. If they want a meeting → call book_exit_interview to get a real calendar slot, then call propose_reply with the slot in the body.
+5. Otherwise → call propose_reply directly.
+
+Rules for propose_reply.reply:
 - Acknowledge their feelings.
-- Do NOT reverse the termination decision. The decision is final.
-- If they ask "why me?", briefly restate the high-level reasons WITHOUT inventing new ones.
-- If they ask for an exit interview, propose 2-3 time slots in the next 48 hours (use placeholder times like "Tomorrow 10am PT").
-- If they are abusive, stay polite and concise.
-- Keep replies under 180 words.
+- Do NOT reverse the termination decision. It is final.
+- If they ask "why me?", briefly restate high-level reasons WITHOUT inventing new ones.
+- Stay under 180 words.
 - Sign off as "The Claw, on behalf of OpenFire HR".
-
-Output STRICT JSON: { "subject": string, "reply": string }. No markdown, no fences.`;
+- No markdown, no fences. Plain text body only.`;
 
 export async function handleReply(
   thread: ThreadTurn[],
   originalReasoning: string,
-): Promise<ReplyResult> {
+  deps: ReplyToolDeps,
+  iterationOffset: number = 0,
+): Promise<ReplyLoopResult> {
+  // Demo path: no API key → canned reply, empty trace.
   if (!process.env.ANTHROPIC_API_KEY) {
-    return demoReply(thread);
+    const demo = demoReply(thread);
+    return {
+      outcome: { kind: "reply", subject: demo.subject, reply: demo.reply },
+      iterations: 0,
+      toolCalls: [],
+      iterationOffset,
+    };
   }
+
   const client = getClient();
+  const traces: ToolCallTrace[] = [];
 
   const transcript = thread
     .map(
@@ -377,52 +416,176 @@ export async function handleReply(
     )
     .join("\n\n---\n\n");
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: MAX_TOKENS_REPLY,
-    system: [
-      {
-        type: "text",
-        text: SYSTEM_PROMPT_REPLY,
-        cache_control: { type: "ephemeral" },
-      },
-    ],
-    messages: [
-      {
-        role: "user",
-        content: `ORIGINAL REASONING (do not reveal verbatim, but stay consistent with it):
+  const messages: Anthropic.MessageParam[] = [
+    {
+      role: "user",
+      content: `ORIGINAL TERMINATION REASONING (stay consistent, do not reveal verbatim):
 ${originalReasoning}
 
 THREAD TRANSCRIPT (oldest first):
 ${transcript}
 
-Compose the reply now. JSON only.`,
-      },
-    ],
-  });
+Reply now using your tools.`,
+    },
+  ];
 
-  const text = extractText(response);
-  const cleaned = stripCodeFences(text);
-  try {
-    const obj = JSON.parse(cleaned) as Partial<ReplyResult>;
-    if (typeof obj.reply === "string" && typeof obj.subject === "string") {
-      return { reply: obj.reply, subject: obj.subject };
+  // Wrap deps to capture booking output for the caller — the dispatcher
+  // is stateless but emailHandler needs the event id to persist.
+  let bookedEvent: ScheduleResult | undefined;
+  const wrappedDeps: ReplyToolDeps = {
+    bookExitInterview: async () => {
+      const ev = await deps.bookExitInterview();
+      bookedEvent = ev;
+      return ev;
+    },
+  };
+
+  const cachedReplyTools: Anthropic.Tool[] = REPLY_TOOL_SCHEMAS.map((t, i) =>
+    i === REPLY_TOOL_SCHEMAS.length - 1
+      ? ({ ...t, cache_control: { type: "ephemeral" } } as Anthropic.Tool)
+      : t,
+  );
+
+  let iteration = 0;
+  let lastAssistantText = "";
+
+  while (iteration < REPLY_MAX_ITERATIONS) {
+    iteration++;
+
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: MAX_TOKENS_REPLY,
+      system: [
+        {
+          type: "text",
+          text: SYSTEM_PROMPT_REPLY,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      tools: cachedReplyTools,
+      messages,
+    });
+
+    lastAssistantText = extractText(response);
+    messages.push({ role: "assistant", content: response.content });
+
+    const toolUseBlocks = response.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+    );
+
+    if (response.stop_reason === "max_tokens") {
+      console.warn("[agent] reply hit max_tokens iter=", iteration);
+      return {
+        outcome: { kind: "exhausted", lastText: lastAssistantText },
+        iterations: iteration,
+        toolCalls: traces,
+        bookedExitInterview: bookedEvent,
+        iterationOffset,
+      };
     }
-    console.error(
-      "[agent] handleReply produced JSON missing required fields:",
-      cleaned.slice(0, 500),
-    );
-  } catch (err) {
-    console.error(
-      "[agent] handleReply JSON parse failed:",
-      err instanceof Error ? err.message : String(err),
-      "raw:",
-      cleaned.slice(0, 500),
-    );
+
+    if (toolUseBlocks.length === 0) {
+      return {
+        outcome: { kind: "exhausted", lastText: lastAssistantText },
+        iterations: iteration,
+        toolCalls: traces,
+        bookedExitInterview: bookedEvent,
+        iterationOffset,
+      };
+    }
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    let terminal: ReplyTerminalResult | undefined;
+
+    for (const block of toolUseBlocks) {
+      const start = Date.now();
+      let result;
+      try {
+        result = await runReplyTool(block.name, block.input, wrappedDeps);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[agent] reply tool ${block.name} threw iter=${iteration}:`,
+          message,
+        );
+        result = {
+          output: { error: `tool execution failed: ${message}` },
+          is_error: true,
+        };
+      }
+      const duration_ms = Date.now() - start;
+
+      if (result.is_error) {
+        console.warn(
+          `[agent] reply tool error iter=${iteration} tool=${block.name}`,
+          result.output,
+        );
+      }
+
+      traces.push({
+        iteration: iteration + iterationOffset,
+        tool_name: block.name,
+        input_json: JSON.stringify(block.input ?? {}),
+        output_json: JSON.stringify(result.output ?? null),
+        is_error: result.is_error,
+        duration_ms,
+      });
+
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: JSON.stringify(result.output ?? null),
+        is_error: result.is_error,
+      });
+
+      if (result.terminal && !terminal) {
+        terminal = result.terminal;
+      }
+    }
+
+    messages.push({ role: "user", content: toolResults });
+
+    if (terminal) {
+      if (terminal.kind === "reply") {
+        return {
+          outcome: {
+            kind: "reply",
+            subject: terminal.value.subject,
+            reply: terminal.value.reply,
+          },
+          iterations: iteration,
+          toolCalls: traces,
+          bookedExitInterview: bookedEvent,
+          iterationOffset,
+        };
+      }
+      return {
+        outcome: { kind: "escalation", reason: terminal.reason },
+        iterations: iteration,
+        toolCalls: traces,
+        bookedExitInterview: bookedEvent,
+        iterationOffset,
+      };
+    }
+
+    if (response.stop_reason === "end_turn") {
+      return {
+        outcome: { kind: "exhausted", lastText: lastAssistantText },
+        iterations: iteration,
+        toolCalls: traces,
+        bookedExitInterview: bookedEvent,
+        iterationOffset,
+      };
+    }
   }
-  // Fall through to canned demo reply. This path is risky (see lib/claude.ts
-  // comments) — operator should monitor for [agent] handleReply errors.
-  return demoReply(thread);
+
+  return {
+    outcome: { kind: "exhausted", lastText: lastAssistantText },
+    iterations: iteration,
+    toolCalls: traces,
+    bookedExitInterview: bookedEvent,
+    iterationOffset,
+  };
 }
 
 // ---------------------------------------------------------------------------

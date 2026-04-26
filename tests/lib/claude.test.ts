@@ -18,7 +18,11 @@ describe("evaluateEmployee (demo mode)", () => {
           summary: "Some context.",
           sources: [{ type: "github", name: "PR", summary: "stale" }],
         }),
-        searchEmployeeHistory: async () => [],
+        searchEmployeeHistory: async () => ({
+          totalDecisionsScanned: 0,
+          totalMessagesScanned: 0,
+          hits: [],
+        }),
       }
     );
     expect(result.outcome.kind).toBe("decision");
