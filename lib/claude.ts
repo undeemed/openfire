@@ -1,20 +1,28 @@
 /**
  * Claude agent logic for OpenFire.
  *
- * - evaluateEmployee: given Nozomio context + active criteria, returns
- *   {decision, reasoning, emailDraft}.
- * - handleReply: given a thread + inbound email, returns an empathetic
- *   but firm reply.
+ * - evaluateEmployee: tool-use loop. The agent fetches context + history
+ *   via tools and ends by calling either `propose_decision` or
+ *   `escalate_to_human`. Every tool call is traced for the dossier UI.
+ * - handleReply: single-shot reply to a thread (still no tools — the
+ *   reply path will get its own tools in a later PR).
  *
  * Model: claude-sonnet-4-6 (claude-sonnet-4-6-20250929 alias).
- * Uses prompt caching on the static system prompt to reduce cost when
- * the agent runs many times in a row.
+ * Uses prompt caching on the static system prompt so repeated runs
+ * within a 5-minute window pay only the cached-input rate.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { NozomioEntityContext } from "./nozomio";
+import {
+  TOOL_SCHEMAS,
+  runTool,
+  type ToolDeps,
+  type TerminalToolResult,
+} from "./agent-tools";
 
 const MODEL = "claude-sonnet-4-6-20250929";
+const MAX_ITERATIONS = 8;
 
 function getClient() {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -40,79 +48,189 @@ export interface EvaluationResult {
   emailDraft: string;
 }
 
+export interface ToolCallTrace {
+  iteration: number;
+  tool_name: string;
+  input_json: string;
+  output_json: string;
+  is_error: boolean;
+  duration_ms: number;
+}
+
+export type AgentOutcome =
+  | { kind: "decision"; result: EvaluationResult }
+  | { kind: "escalation"; reason: string }
+  | { kind: "exhausted"; lastText: string };
+
+export interface AgentLoopResult {
+  outcome: AgentOutcome;
+  iterations: number;
+  toolCalls: ToolCallTrace[];
+}
+
 const SYSTEM_PROMPT_EVALUATE = `You are "The Claw", an AI HR agent for OpenFire. Your job is to read evidence about an employee and decide whether they should be terminated based on the manager's pre-approved criteria.
 
-Tone: dryly professional, slightly dark-comedic, but never cruel. The output goes to a human manager who will approve before anything is sent. Never invent facts not present in the provided context. If evidence is thin, prefer to spare.
+Tone: dryly professional, slightly dark-comedic, but never cruel. The output goes to a human manager who will approve before anything is sent. Never invent facts not present in the tool outputs. If evidence is thin, prefer to spare or escalate.
 
-Output STRICT JSON with these keys:
-- decision: "fire" | "spare"
-- reasoning: a concise paragraph (3-6 sentences) citing specific signals from the context
-- emailDraft: a complete termination email body if decision="fire", or a brief internal note if decision="spare"
+You have tools. Use them. Do not produce free-form prose. The conversation ends only when you call either:
+- propose_decision (final verdict + email draft), OR
+- escalate_to_human (bail out with reason)
 
-The termination email should:
-- Be addressed to the employee by first name
-- State clearly that their employment is being terminated, effective immediately
-- Reference 1-3 concrete reasons drawn from the evidence
-- Mention an exit interview will be scheduled
-- Be 4-7 short paragraphs
-- Sign off as "The Claw, on behalf of OpenFire HR"
-- Be firm, not mocking. No emojis in the email body.
+Workflow:
+1. Call fetch_nozomio_context first to see the evidence.
+2. Drill into specific sources (fetch_nozomio_source) only if a signal is unclear.
+3. Optionally call search_employee_history to stay consistent with past decisions.
+4. Decide. If evidence is contradictory, ambiguous, or implicates protected categories (medical leave, pregnancy, harassment claims), escalate instead of guessing.
+5. Call propose_decision OR escalate_to_human exactly once.
 
-Return ONLY the JSON object. No prose before or after. No markdown fences.`;
+When proposing a termination email:
+- Address the employee by first name.
+- State termination is effective immediately.
+- Reference 1-3 concrete signals from the tool outputs.
+- Mention an exit interview will be scheduled.
+- 4-7 short paragraphs.
+- Sign off as "The Claw, on behalf of OpenFire HR".
+- No emojis, no markdown fences, no JSON outside the tool input.`;
 
 export async function evaluateEmployee(
   employee: EmployeeInput,
-  context: NozomioEntityContext,
-  criteria: CriterionInput[]
-): Promise<EvaluationResult> {
+  criteria: CriterionInput[],
+  deps: ToolDeps,
+): Promise<AgentLoopResult> {
   if (!process.env.ANTHROPIC_API_KEY) {
-    return demoEvaluation(employee, context, criteria);
+    const ctx = await deps.getNozomioContext();
+    return {
+      outcome: {
+        kind: "decision",
+        result: demoEvaluation(employee, ctx, criteria),
+      },
+      iterations: 0,
+      toolCalls: [],
+    };
   }
 
   const client = getClient();
+  const traces: ToolCallTrace[] = [];
 
-  const userBlock = buildEvaluationUserMessage(employee, context, criteria);
+  const messages: Anthropic.MessageParam[] = [
+    {
+      role: "user",
+      content: buildEvaluationUserMessage(employee, criteria),
+    },
+  ];
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 1500,
-    system: [
-      {
-        type: "text",
-        text: SYSTEM_PROMPT_EVALUATE,
-        cache_control: { type: "ephemeral" },
-      },
-    ],
-    messages: [{ role: "user", content: userBlock }],
-  });
+  let iteration = 0;
+  let lastAssistantText = "";
 
-  const text = extractText(response);
-  return parseEvaluation(text, employee, context, criteria);
+  while (iteration < MAX_ITERATIONS) {
+    iteration++;
+
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 1500,
+      system: [
+        {
+          type: "text",
+          text: SYSTEM_PROMPT_EVALUATE,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      tools: TOOL_SCHEMAS,
+      messages,
+    });
+
+    lastAssistantText = extractText(response);
+
+    // Append assistant turn so the next loop iteration sees it.
+    messages.push({ role: "assistant", content: response.content });
+
+    const toolUseBlocks = response.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+    );
+
+    if (toolUseBlocks.length === 0) {
+      // Model ended without calling a terminal tool. Bail.
+      return {
+        outcome: { kind: "exhausted", lastText: lastAssistantText },
+        iterations: iteration,
+        toolCalls: traces,
+      };
+    }
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    let terminal: TerminalToolResult | undefined;
+
+    for (const block of toolUseBlocks) {
+      const start = Date.now();
+      const result = await runTool(block.name, block.input, deps);
+      const duration_ms = Date.now() - start;
+
+      traces.push({
+        iteration,
+        tool_name: block.name,
+        input_json: JSON.stringify(block.input ?? {}),
+        output_json: JSON.stringify(result.output ?? null),
+        is_error: result.is_error,
+        duration_ms,
+      });
+
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: JSON.stringify(result.output ?? null),
+        is_error: result.is_error,
+      });
+
+      if (result.terminal && !terminal) {
+        terminal = result.terminal;
+      }
+    }
+
+    messages.push({ role: "user", content: toolResults });
+
+    if (terminal) {
+      if (terminal.kind === "decision") {
+        return {
+          outcome: { kind: "decision", result: terminal.value },
+          iterations: iteration,
+          toolCalls: traces,
+        };
+      }
+      return {
+        outcome: { kind: "escalation", reason: terminal.reason },
+        iterations: iteration,
+        toolCalls: traces,
+      };
+    }
+
+    if (response.stop_reason === "end_turn") {
+      return {
+        outcome: { kind: "exhausted", lastText: lastAssistantText },
+        iterations: iteration,
+        toolCalls: traces,
+      };
+    }
+  }
+
+  return {
+    outcome: { kind: "exhausted", lastText: lastAssistantText },
+    iterations: iteration,
+    toolCalls: traces,
+  };
 }
 
 function buildEvaluationUserMessage(
   employee: EmployeeInput,
-  context: NozomioEntityContext,
-  criteria: CriterionInput[]
+  criteria: CriterionInput[],
 ): string {
   const criteriaBlock = criteria.length
     ? criteria
         .map(
           (c, i) =>
-            `${i + 1}. ${c.name} (weight ${c.weight}): ${c.description}`
+            `${i + 1}. ${c.name} (weight ${c.weight}): ${c.description}`,
         )
         .join("\n")
     : "(no criteria configured — default to spare unless evidence is overwhelming)";
-
-  const sourcesBlock = context.sources.length
-    ? context.sources
-        .map(
-          (s) =>
-            `- [${s.type}] ${s.name}: ${s.summary}` +
-            (s.signals ? `\n  signals: ${JSON.stringify(s.signals)}` : "")
-        )
-        .join("\n")
-    : "(no sources available)";
 
   return `EMPLOYEE
 Name: ${employee.name}
@@ -122,51 +240,7 @@ Role: ${employee.role}
 FIRE CRITERIA
 ${criteriaBlock}
 
-CONTEXT (from Nozomio)
-Summary: ${context.summary}
-
-Sources:
-${sourcesBlock}
-
-Make the decision now. Return JSON only.`;
-}
-
-function parseEvaluation(
-  text: string,
-  employee: EmployeeInput,
-  context: NozomioEntityContext,
-  criteria: CriterionInput[]
-): EvaluationResult {
-  const cleaned = stripCodeFences(text);
-  try {
-    const obj = JSON.parse(cleaned) as Partial<EvaluationResult>;
-    if (
-      (obj.decision === "fire" || obj.decision === "spare") &&
-      typeof obj.reasoning === "string" &&
-      typeof obj.emailDraft === "string"
-    ) {
-      return {
-        decision: obj.decision,
-        reasoning: obj.reasoning,
-        emailDraft: obj.emailDraft,
-      };
-    }
-  } catch {
-    // fall through
-  }
-  console.warn("[claude] could not parse evaluation, using demo fallback");
-  return demoEvaluation(employee, context, criteria);
-}
-
-function stripCodeFences(s: string): string {
-  const trimmed = s.trim();
-  if (trimmed.startsWith("```")) {
-    return trimmed
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/```\s*$/, "")
-      .trim();
-  }
-  return trimmed;
+Use your tools to gather evidence, then call propose_decision or escalate_to_human.`;
 }
 
 function extractText(resp: Anthropic.Message): string {
@@ -179,14 +253,14 @@ function extractText(resp: Anthropic.Message): string {
 function demoEvaluation(
   employee: EmployeeInput,
   context: NozomioEntityContext,
-  criteria: CriterionInput[]
+  criteria: CriterionInput[],
 ): EvaluationResult {
   const firstName = employee.name.split(/\s+/)[0] || employee.name;
   const reason =
     criteria[0]?.name ?? "performance signals from connected sources";
   const reasoning = `Based on the available signals (${context.summary.slice(
     0,
-    160
+    160,
   )}), ${firstName} appears to fall short of the configured criteria — particularly "${reason}". Spare reasoning would require a substantially stronger counter-signal that is not present in the provided context.`;
 
   const emailDraft = `Dear ${firstName},
@@ -205,7 +279,8 @@ The Claw, on behalf of OpenFire HR`;
 }
 
 // ---------------------------------------------------------------------------
-// Reply handling
+// Reply handling — still single-shot. Will get its own tool loop in a
+// later PR (book_exit_interview, etc.).
 // ---------------------------------------------------------------------------
 
 export interface ThreadTurn {
@@ -235,7 +310,7 @@ Output STRICT JSON: { "subject": string, "reply": string }. No markdown, no fenc
 
 export async function handleReply(
   thread: ThreadTurn[],
-  originalReasoning: string
+  originalReasoning: string,
 ): Promise<ReplyResult> {
   if (!process.env.ANTHROPIC_API_KEY) {
     return demoReply(thread);
@@ -245,7 +320,7 @@ export async function handleReply(
   const transcript = thread
     .map(
       (t) =>
-        `[${t.direction.toUpperCase()}] from=${t.from} subject=${t.subject}\n${t.body}`
+        `[${t.direction.toUpperCase()}] from=${t.from} subject=${t.subject}\n${t.body}`,
     )
     .join("\n\n---\n\n");
 
@@ -715,6 +790,17 @@ Full citations preserved in each worker's thread message.
 
 — OpenFire Orchestrator`,
   };
+}
+
+function stripCodeFences(s: string): string {
+  const trimmed = s.trim();
+  if (trimmed.startsWith("```")) {
+    return trimmed
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/```\s*$/, "")
+      .trim();
+  }
+  return trimmed;
 }
 
 function demoReply(thread: ThreadTurn[]): ReplyResult {

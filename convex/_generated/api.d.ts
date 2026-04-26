@@ -10,6 +10,7 @@
 
 import type * as a2aHandler from "../a2aHandler.js";
 import type * as agent from "../agent.js";
+import type * as agentHistory from "../agentHistory.js";
 import type * as criteria from "../criteria.js";
 import type * as decisions from "../decisions.js";
 import type * as digitalEmployees from "../digitalEmployees.js";
@@ -31,6 +32,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   a2aHandler: typeof a2aHandler;
   agent: typeof agent;
+  agentHistory: typeof agentHistory;
   criteria: typeof criteria;
   decisions: typeof decisions;
   digitalEmployees: typeof digitalEmployees;

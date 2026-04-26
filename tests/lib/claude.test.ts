@@ -8,19 +8,26 @@ import {
 } from "@/lib/claude";
 
 describe("evaluateEmployee (demo mode)", () => {
-  test("returns valid decision shape", async () => {
+  test("tool-loop returns a decision outcome with valid shape", async () => {
     const result = await evaluateEmployee(
       { name: "Alex Doe", email: "a@d.e", role: "Engineer" },
+      [{ name: "Code Quality", description: "ship clean code", weight: 1 }],
       {
-        entity_id: "x",
-        summary: "Some context.",
-        sources: [{ type: "github", name: "PR", summary: "stale" }],
-      },
-      [{ name: "Code Quality", description: "ship clean code", weight: 1 }]
+        getNozomioContext: async () => ({
+          entity_id: "x",
+          summary: "Some context.",
+          sources: [{ type: "github", name: "PR", summary: "stale" }],
+        }),
+        searchEmployeeHistory: async () => [],
+      }
     );
-    expect(["fire", "spare"]).toContain(result.decision);
-    expect(result.reasoning.length).toBeGreaterThan(10);
-    expect(result.emailDraft.length).toBeGreaterThan(10);
+    expect(result.outcome.kind).toBe("decision");
+    if (result.outcome.kind === "decision") {
+      expect(["fire", "spare"]).toContain(result.outcome.result.decision);
+      expect(result.outcome.result.reasoning.length).toBeGreaterThan(10);
+      expect(result.outcome.result.emailDraft.length).toBeGreaterThan(10);
+    }
+    expect(Array.isArray(result.toolCalls)).toBe(true);
   });
 });
 
