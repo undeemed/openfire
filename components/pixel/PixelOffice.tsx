@@ -311,12 +311,21 @@ async function loadAssets(): Promise<Assets> {
 
 // ── Component ────────────────────────────────────────────────────
 
-export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
+export function PixelOffice({
+  entities,
+  onSelect,
+}: {
+  entities: OfficeEntity[];
+  /** Fires when the user clicks on a character. */
+  onSelect?: (id: string) => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const charsRef = useRef<Map<string, Character>>(new Map());
   const assetsRef = useRef<Assets | null>(null);
   const lastTimeRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -418,6 +427,41 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.imageSmoothingEnabled = false;
+
+    // Hit-test on click. Map screen click coords back into canvas
+    // pixel space (accounting for CSS scaling, e.g. fullscreen) and
+    // pick the topmost character whose 16×32 sprite bbox covers the
+    // click point — "topmost" meaning largest anchor Y so we select the
+    // character drawn last in the Z-sort.
+    const onClick = (e: MouseEvent) => {
+      const cb = onSelectRef.current;
+      if (!cb) return;
+      const rect = canvas.getBoundingClientRect();
+      const cx = ((e.clientX - rect.left) * CANVAS_W) / rect.width;
+      const cy = ((e.clientY - rect.top) * CANVAS_H) / rect.height;
+      const drawW = CHAR_FRAME_W * ZOOM;
+      const drawH = CHAR_FRAME_H * ZOOM;
+      let hitId: string | null = null;
+      let bestY = -Infinity;
+      for (const ch of charsRef.current.values()) {
+        const wx = ch.x * TILE * ZOOM + (TILE * ZOOM) / 2;
+        const wy = (ch.y + 1) * TILE * ZOOM;
+        if (
+          cx >= wx - drawW / 2 &&
+          cx <= wx + drawW / 2 &&
+          cy >= wy - drawH &&
+          cy <= wy
+        ) {
+          if (ch.y > bestY) {
+            bestY = ch.y;
+            hitId = ch.id;
+          }
+        }
+      }
+      if (hitId) cb(hitId);
+    };
+    canvas.addEventListener("click", onClick);
+    canvas.style.cursor = "pointer";
 
     const tick = (now: number) => {
       const last = lastTimeRef.current || now;
@@ -657,6 +701,7 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
     rafRef.current = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      canvas.removeEventListener("click", onClick);
     };
   }, [ready, floorPlan]);
 

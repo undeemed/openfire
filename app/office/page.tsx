@@ -15,11 +15,12 @@
  * roster so the visual works without a backend deployed. This is the
  * mode used by the visual smoke test.
  */
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { PixelOffice, OfficeEntity } from "@/components/pixel/PixelOffice";
+import { CharacterDossier } from "@/components/pixel/CharacterDossier";
 import Link from "next/link";
 
 const DEMO_ROSTER: OfficeEntity[] = [
@@ -127,7 +128,7 @@ function OfficePageInner() {
         </div>
       </section>
 
-      <PixelOffice entities={entities} />
+      <OfficeWithDossier entities={entities} />
 
       <section className="grid sm:grid-cols-4 gap-3 text-[10px] font-mono">
         <Legend swatch="active" label="Desk · idle/typing" />
@@ -135,7 +136,29 @@ function OfficePageInner() {
         <Legend swatch="fired" label="Exit · grayed out" />
         <Legend swatch="worker" label="Workstation · AI worker" />
       </section>
+      <p className="text-[10px] font-mono text-[var(--text-dim)] tracking-wide">
+        Tip: click any character for a dossier — role, current task, progress.
+      </p>
     </div>
+  );
+}
+
+function OfficeWithDossier({ entities }: { entities: OfficeEntity[] }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = selectedId
+    ? (entities.find((e) => e.id === selectedId) ?? null)
+    : null;
+  return (
+    <>
+      <PixelOffice entities={entities} onSelect={setSelectedId} />
+      <CharacterDossier
+        entity={selected}
+        open={!!selected}
+        onOpenChange={(o) => {
+          if (!o) setSelectedId(null);
+        }}
+      />
+    </>
   );
 }
 
