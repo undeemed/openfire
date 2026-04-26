@@ -26,12 +26,24 @@ export interface ToolDispatchContext {
   ) => Promise<void>;
 }
 
+export type LoopFinalStatus =
+  | "done"
+  | "failed"
+  | "refused"
+  | "waiting_input";
+
 export interface ToolResult {
   ok: boolean;
   /** JSON-serializable payload that becomes the tool_result content. */
   output: unknown;
   /** When set, the runner exits the loop after appending this result. */
   endsLoop?: boolean;
+  /**
+   * When `endsLoop` is true, the runner uses this as the action's final
+   * status so the return value matches whatever the tool wrote to the DB
+   * via `setStatus`. Defaults to "done" if omitted.
+   */
+  endsLoopStatus?: LoopFinalStatus;
 }
 
 const ROLE_STUB_RESPONSES: Record<string, (input: Record<string, unknown>) => unknown> = {
@@ -150,6 +162,7 @@ export async function executeTool(
       ok: true,
       output: { paused: true, question, why },
       endsLoop: true,
+      endsLoopStatus: "waiting_input",
     };
   }
 
@@ -169,7 +182,12 @@ export async function executeTool(
       finished: true,
     });
     await ctx.appendStep("final", summary);
-    return { ok: true, output: { recorded: true, status: final }, endsLoop: true };
+    return {
+      ok: true,
+      output: { recorded: true, status: final },
+      endsLoop: true,
+      endsLoopStatus: final as LoopFinalStatus,
+    };
   }
 
   // ---- ROLE-SPECIFIC TOOLS — stubs ----

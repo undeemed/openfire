@@ -206,6 +206,7 @@ export const dispatchTask = action({
           is_error?: boolean;
         }> = [];
         let endsLoop = false;
+        let endsLoopStatus: "done" | "failed" | "refused" | "waiting_input" | undefined;
 
         for (const tu of toolUses) {
           await dispatchCtx.appendStep(
@@ -234,13 +235,17 @@ export const dispatchTask = action({
             is_error: !result.ok,
           });
 
-          if (result.endsLoop) endsLoop = true;
+          if (result.endsLoop) {
+            endsLoop = true;
+            // Last endsLoop tool wins if multiple in same turn.
+            if (result.endsLoopStatus) endsLoopStatus = result.endsLoopStatus;
+          }
         }
 
         messages.push({ role: "user", content: toolResultBlocks });
 
         if (endsLoop) {
-          finalStatus = "done";
+          finalStatus = endsLoopStatus ?? "done";
           break;
         }
 
