@@ -15,13 +15,36 @@
  * roster so the visual works without a backend deployed. This is the
  * mode used by the visual smoke test.
  */
-import { Suspense, useState } from "react";
+import { Suspense, useState, Component, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { PixelOffice, OfficeEntity } from "@/components/pixel/PixelOffice";
 import { CharacterDossier } from "@/components/pixel/CharacterDossier";
 import Link from "next/link";
+
+/**
+ * Catches Convex query failures (e.g. functions not yet pushed to the
+ * deployment, network error, schema mismatch) and renders the demo
+ * roster instead of crashing the whole page. The UI surfaces the error
+ * so the developer knows to run `npx convex dev` or fix their config.
+ */
+class OfficeErrorBoundary extends Component<
+  { fallback: (err: Error) => ReactNode; children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error) {
+    console.warn("[/office] live data unavailable, falling back to demo:", error);
+  }
+  render() {
+    if (this.state.error) return this.props.fallback(this.state.error);
+    return this.props.children;
+  }
+}
 
 const DEMO_ROSTER: OfficeEntity[] = [
   { id: "e1", name: "Alice", kind: "employee", status: "active", paletteIdx: 0 },
@@ -49,8 +72,43 @@ interface ConvexWorker {
 export default function OfficePage() {
   return (
     <Suspense fallback={<OfficeLoading />}>
-      <OfficePageInner />
+      <OfficeErrorBoundary
+        fallback={(err) => (
+          <OfficeDemoFallback errorMessage={err.message} />
+        )}
+      >
+        <OfficePageInner />
+      </OfficeErrorBoundary>
     </Suspense>
+  );
+}
+
+function OfficeDemoFallback({ errorMessage }: { errorMessage: string }) {
+  const missingFn = /Could not find public function for '([^']+)'/.exec(
+    errorMessage
+  )?.[1];
+  return (
+    <div className="space-y-6 text-center">
+      <div className="border border-[var(--accent)]/60 bg-[var(--accent-dim)]/20 p-4 mx-auto max-w-3xl text-left">
+        <p className="text-[10px] font-mono tracking-[0.2em] text-[var(--accent)] uppercase mb-2">
+          Live data unavailable — showing demo roster
+        </p>
+        <p className="text-[10px] font-mono text-[var(--text-muted)] leading-relaxed">
+          {missingFn ? (
+            <>
+              Convex deployment is missing <code>{missingFn}</code>. Run{" "}
+              <code className="text-[var(--accent)]">npx convex dev</code> in
+              another terminal to push the latest functions, then reload.
+            </>
+          ) : (
+            <>Backend query failed: {errorMessage}</>
+          )}
+        </p>
+      </div>
+      <div className="w-full flex justify-center">
+        <OfficeWithDossier entities={DEMO_ROSTER} />
+      </div>
+    </div>
   );
 }
 
