@@ -1,3 +1,5 @@
+"use node";
+
 /**
  * Inbound email handler. Called from the AgentMail webhook route after
  * HMAC verification succeeds. Idempotent: if we have already seen the

@@ -41,9 +41,7 @@ export function DecisionModal({
     setBusy(action);
     setError(null);
     try {
-      const res = await fetch(`/api/decisions/${decision._id}/${action}`, {
-        method: "POST",
-      });
+      const res = await fetch(`/api/decisions/${decision._id}/${action}`, { method: "POST" });
       if (!res.ok) {
         const t = await res.text();
         throw new Error(t || `Failed to ${action}`);
@@ -62,40 +60,36 @@ export function DecisionModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent onClose={() => onOpenChange(false)}>
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            Decision for {employeeName}
-            <Badge variant={decision.decision === "fire" ? "fired" : "spared"}>
-              {decision.decision === "fire" ? "FIRE" : "SPARE"}
+          <DialogTitle className="flex items-center gap-3">
+            {employeeName}
+            <Badge variant={decision.decision === "fire" ? "active" : "spared"}>
+              {decision.decision === "fire" ? "Terminate" : "Spare"}
             </Badge>
           </DialogTitle>
           <DialogDescription>
-            The Claw has reviewed the evidence. Approve to send the email, or spare them.
+            The Claw has rendered judgment. Approve to dispatch the email.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 max-h-[55vh] overflow-y-auto pr-1">
-          <section>
-            <div className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
-              Reasoning
-            </div>
-            <p className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">
+        <div className="space-y-5 max-h-[52vh] overflow-y-auto pr-1">
+          <div>
+            <div className="text-[8px] font-mono tracking-[0.22em] text-[var(--text-dim)] uppercase mb-2">Reasoning</div>
+            <p className="text-[11px] font-mono text-[var(--text-muted)] whitespace-pre-wrap leading-relaxed">
               {decision.reasoning}
             </p>
-          </section>
+          </div>
 
-          <section>
-            <div className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
-              Email draft
-            </div>
-            <pre className="rounded-md bg-zinc-900/80 border border-zinc-800 p-3 text-xs text-zinc-200 whitespace-pre-wrap font-mono">
+          <div>
+            <div className="text-[8px] font-mono tracking-[0.22em] text-[var(--text-dim)] uppercase mb-2">Email Draft</div>
+            <pre className="border border-[var(--border)] bg-[var(--surface-raised)] p-4 text-[10px] font-mono text-[var(--text-muted)] whitespace-pre-wrap leading-relaxed">
 {decision.email_draft}
             </pre>
-          </section>
+          </div>
         </div>
 
         {error ? (
-          <div className="mt-3 rounded-md border border-red-800/60 bg-red-950/40 p-3 text-xs text-red-300">
-            {error}
+          <div className="border border-[var(--accent)]/60 bg-[var(--accent-dim)]/20 p-3">
+            <p className="text-[10px] font-mono text-[var(--accent)]">{error}</p>
           </div>
         ) : null}
 
@@ -105,22 +99,16 @@ export function DecisionModal({
             onClick={() => act("reject")}
             disabled={!isPending || busy !== null}
           >
-            {busy === "reject" ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : null}
-            Spare Them 🕊️
+            {busy === "reject" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            Spare Them
           </Button>
           <Button
             variant="fire"
             onClick={() => act("approve")}
             disabled={!isPending || busy !== null || decision.decision !== "fire"}
           >
-            {busy === "approve" ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-            Send It 📤
+            {busy === "approve" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+            Send It
           </Button>
         </DialogFooter>
       </DialogContent>

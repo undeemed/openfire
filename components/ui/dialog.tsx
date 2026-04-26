@@ -24,10 +24,10 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
-        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+        className="overlay-in absolute inset-0 bg-[var(--bg)]/80 backdrop-blur-sm"
         onClick={() => onOpenChange(false)}
       />
-      <div className="relative z-10 w-full max-w-2xl">{children}</div>
+      <div className="dialog-enter relative z-10 w-full max-w-2xl">{children}</div>
     </div>
   );
 }
@@ -42,19 +42,16 @@ export function DialogContent({
   onClose?: () => void;
 }) {
   return (
-    <div
-      className={cn(
-        "rounded-xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl shadow-orange-900/10",
-        className
-      )}
-    >
+    <div className={cn("relative border border-[var(--border)] bg-[var(--surface)] p-6 shadow-2xl", className)}>
+      {/* Header accent bar */}
+      <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-[var(--accent-dim)] via-[var(--accent)] to-[var(--accent-dim)]" />
       {onClose ? (
         <button
           onClick={onClose}
-          className="absolute right-4 top-4 rounded-md p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          className="absolute right-4 top-4 p-1 text-[var(--text-dim)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)] transition-colors"
           aria-label="Close"
         >
-          <X className="h-4 w-4" />
+          <X className="h-3.5 w-3.5" />
         </button>
       ) : null}
       {children}
@@ -62,47 +59,26 @@ export function DialogContent({
   );
 }
 
-export function DialogHeader({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
+export function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("mb-5 flex flex-col space-y-1.5", className)} {...props} />;
+}
+
+export function DialogTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
   return (
-    <div
-      className={cn("mb-4 flex flex-col space-y-1.5", className)}
-      {...props}
-    />
+    <h2 className={cn("font-display text-xl font-semibold text-[var(--text)]", className)} {...props} />
   );
 }
 
-export function DialogTitle({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLHeadingElement>) {
+export function DialogDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
   return (
-    <h2
-      className={cn("text-xl font-semibold text-zinc-100", className)}
-      {...props}
-    />
+    <p className={cn("text-xs font-mono text-[var(--text-muted)]", className)} {...props} />
   );
 }
 
-export function DialogDescription({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn("text-sm text-zinc-400", className)} {...props} />;
-}
-
-export function DialogFooter({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
+export function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn(
-        "mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
-        className
-      )}
+      className={cn("mt-6 pt-4 border-t border-[var(--border)] flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)}
       {...props}
     />
   );

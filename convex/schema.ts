@@ -28,13 +28,38 @@ export default defineSchema({
       v.literal("pending"),
       v.literal("approved"),
       v.literal("rejected"),
-      v.literal("sent")
+      v.literal("sent"),
+      v.literal("escalated")
     ),
     created_at: v.number(),
+    // Set when handleReply or evaluateEmployee bails out and asks a human
+    // to take over (e.g. evidence is too thin to act on).
+    escalated_reason: v.optional(v.string()),
+    // Filled in by book_exit_interview tool — replaces the regex check in
+    // emailHandler.ts so the reply loop knows the slot is booked.
+    exit_interview_event_id: v.optional(v.string()),
+    // How many tool-use iterations the agent ran to reach this decision.
+    // Useful for cost / quality regression tracking.
+    iterations: v.optional(v.number()),
   })
     .index("by_employee", ["employee_id"])
     .index("by_status", ["status"])
     .index("by_thread", ["agentmail_thread_id"]),
+
+  tool_calls: defineTable({
+    decision_id: v.id("decisions"),
+    iteration: v.number(),
+    tool_name: v.string(),
+    // Stored as JSON strings so the schema doesn't have to enumerate every
+    // tool's input/output shape. The dispatcher owns serialization.
+    input_json: v.string(),
+    output_json: v.string(),
+    is_error: v.boolean(),
+    duration_ms: v.number(),
+    created_at: v.number(),
+  })
+    .index("by_decision", ["decision_id"])
+    .index("by_decision_and_iteration", ["decision_id", "iteration"]),
 
   criteria: defineTable({
     name: v.string(),

@@ -1,17 +1,25 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Playfair_Display, IBM_Plex_Mono, Barlow_Condensed } from "next/font/google";
 import "./globals.css";
 import { ConvexClientProvider } from "@/components/convex-provider";
 import { SiteNav } from "@/components/site-nav";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const playfair = Playfair_Display({
+  variable: "--font-playfair",
   subsets: ["latin"],
+  weight: ["400", "600", "700"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const ibmMono = IBM_Plex_Mono({
+  variable: "--font-ibm-mono",
   subsets: ["latin"],
+  weight: ["400", "500", "600"],
+});
+
+const barlow = Barlow_Condensed({
+  variable: "--font-barlow",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
@@ -21,23 +29,24 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
+      className={`${playfair.variable} ${ibmMono.variable} ${barlow.variable} h-full`}
     >
-      <body className="min-h-full flex flex-col bg-black text-zinc-100 selection:bg-orange-500/30">
+      <body className="min-h-full flex flex-col antialiased selection:bg-[#b8291e]/30">
         <ConvexClientProvider>
-          <div className="ember-bg pointer-events-none fixed inset-0 -z-10" aria-hidden />
+          <div className="grain pointer-events-none fixed inset-0 -z-10" aria-hidden />
+          <div className="bg-layer pointer-events-none fixed inset-0 -z-20" aria-hidden />
           <SiteNav />
-          <main className="flex-1 mx-auto max-w-6xl w-full px-6 py-8">
+          <main className="flex-1 mx-auto max-w-6xl w-full px-6 py-10">
             {children}
           </main>
-          <footer className="border-t border-zinc-900/70 py-4 text-center text-xs text-zinc-600">
-            OpenFire · Built for the hackathon · The Claw never sleeps
+          <footer className="border-t border-[#2e2824] py-4 text-center text-[9px] tracking-[0.25em] text-[#3a3530] font-mono uppercase">
+            Openfire Protocol · Clearance: Executive · The Claw Never Sleeps
           </footer>
         </ConvexClientProvider>
       </body>
