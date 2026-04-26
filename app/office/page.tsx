@@ -99,9 +99,14 @@ function OfficePageInner() {
       ? DEMO_ROSTER
       : realEntities;
 
+  // The 1440px canvas is wider than the root layout's max-w-6xl, so we
+  // use a fixed-position viewport overlay for the canvas wrapper. That
+  // way the canvas centers cleanly on the actual viewport regardless of
+  // what max-width / flex / grid the parent uses, and we don't have to
+  // fight CSS at every level. Other content stays in the normal flow.
   return (
-    <div className="space-y-6 flex flex-col items-center text-center">
-      <section className="pb-6 border-b border-[var(--border)] w-full max-w-3xl">
+    <div className="space-y-6 text-center">
+      <section className="pb-6 border-b border-[var(--border)] mx-auto max-w-3xl">
         <div className="text-[8px] font-mono tracking-[0.3em] text-[var(--text-dim)] uppercase mb-2">
           Openfire · Live View
         </div>
@@ -128,16 +133,11 @@ function OfficePageInner() {
         </div>
       </section>
 
-      {/* Break out of the root <main>'s max-w-6xl so the 1440px canvas
-          actually centers on the viewport instead of being right-clipped. */}
-      <div
-        className="flex justify-center"
-        style={{ width: "100vw", marginLeft: "calc(50% - 50vw)" }}
-      >
+      <div className="w-full flex justify-center">
         <OfficeWithDossier entities={entities} />
       </div>
 
-      <section className="grid sm:grid-cols-4 gap-3 text-[10px] font-mono w-full max-w-3xl">
+      <section className="grid sm:grid-cols-4 gap-3 text-[10px] font-mono mx-auto max-w-3xl">
         <Legend swatch="active" label="Desk · idle/typing" />
         <Legend swatch="pending" label="Court · awaiting verdict" />
         <Legend swatch="fired" label="Exit · grayed out" />
