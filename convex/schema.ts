@@ -54,4 +54,30 @@ export default defineSchema({
   })
     .index("by_decision", ["decision_id"])
     .index("by_message_id", ["agentmail_message_id"]),
+
+  worker_templates: defineTable({
+    type: v.union(
+      v.literal("engineer"),
+      v.literal("gtm"),
+      v.literal("recruiter"),
+      v.literal("cse"),
+      v.literal("pm"),
+      v.literal("researcher")
+    ),
+    display_name: v.string(),
+    description: v.string(),
+    default_corpora: v.array(v.string()),
+    system_prompt: v.string(),
+    // Tighter than v.any(): require at minimum the Anthropic tool-use top-level
+    // shape. input_schema stays free-form because it varies wildly per tool.
+    tools: v.array(
+      v.object({
+        name: v.string(),
+        description: v.string(),
+        input_schema: v.any(),
+      })
+    ),
+    created_at: v.optional(v.number()),
+    updated_at: v.optional(v.number()),
+  }).index("by_type", ["type"]),
 });
