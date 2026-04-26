@@ -44,6 +44,7 @@ export async function POST(req: Request) {
       thread_id: event.thread_id,
       message_id: event.message_id,
       from: event.from,
+      to: event.to,
       subject: event.subject,
       body: event.body,
     });

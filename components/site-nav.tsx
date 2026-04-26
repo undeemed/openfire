@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 const links = [
   { href: "/", label: "Active Roster" },
   { href: "/pyre", label: "The Pyre" },
+  { href: "/digital-employees", label: "Digital Employees" },
+  { href: "/channels", label: "Channels" },
   { href: "/criteria", label: "Criteria" },
 ];
 

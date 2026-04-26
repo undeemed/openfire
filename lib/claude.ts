@@ -361,6 +361,437 @@ Compose the reply now. JSON only.`,
   return demoReply(thread);
 }
 
+// ---------------------------------------------------------------------------
+// Hire flow: onboarding email + per-agent reply
+// ---------------------------------------------------------------------------
+
+export interface DigitalEmployeeInput {
+  name: string;
+  role: string;
+  agentmail_address: string;
+  knowledge_stats: { sources_indexed: number };
+  replaces_name?: string;
+}
+
+export interface OnboardingResult {
+  subject: string;
+  email: string;
+  evidence_summary: string;
+}
+
+const SYSTEM_PROMPT_ONBOARD = `You are an OpenFire digital employee composing your own onboarding email to your manager. The tone is dry, precise, slightly amused, never grovelling. You never claim emotions you don't have.
+
+Output STRICT JSON: { "subject": string, "email": string, "evidence_summary": string }.
+
+The "email" field must:
+- Open with one short greeting line.
+- State that you have ingested institutional knowledge from your predecessor via Nozomio Nia (cite the indexed source count).
+- List 3-5 concrete domains you can take over (drawn from the role and Nia evidence).
+- Invite the manager to reply or @mention you in any channel.
+- Sign off with your name and AgentMail address.
+- Stay under 220 words.
+
+The "evidence_summary" field is a one-paragraph internal summary of the predecessor's work areas the new agent has absorbed. No markdown, no fences.`;
+
+export async function generateOnboardingEmail(
+  agent: DigitalEmployeeInput,
+  niaPacket: NozomioEntityContext
+): Promise<OnboardingResult> {
+  if (!process.env.ANTHROPIC_API_KEY) return demoOnboarding(agent, niaPacket);
+  const client = getClient();
+
+  const evidence = niaPacket.sources.length
+    ? niaPacket.sources
+        .map((s) => `- [${s.type}] ${s.name}: ${s.summary}`)
+        .join("\n")
+    : "(no source evidence; speak generally about the role)";
+
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: 900,
+    system: [
+      {
+        type: "text",
+        text: SYSTEM_PROMPT_ONBOARD,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: `DIGITAL EMPLOYEE
+Name: ${agent.name}
+Role: ${agent.role}
+Inbox: ${agent.agentmail_address}
+Indexed sources: ${agent.knowledge_stats.sources_indexed}
+Replaces: ${agent.replaces_name ?? "(net-new role)"}
+
+PREDECESSOR EVIDENCE (Nia)
+${evidence}
+
+Compose your onboarding email now. JSON only.`,
+      },
+    ],
+  });
+
+  const cleaned = stripCodeFences(extractText(response));
+  try {
+    const obj = JSON.parse(cleaned) as Partial<OnboardingResult>;
+    if (
+      typeof obj.subject === "string" &&
+      typeof obj.email === "string" &&
+      typeof obj.evidence_summary === "string"
+    ) {
+      return {
+        subject: obj.subject,
+        email: obj.email,
+        evidence_summary: obj.evidence_summary,
+      };
+    }
+  } catch {
+    // fall through
+  }
+  return demoOnboarding(agent, niaPacket);
+}
+
+function demoOnboarding(
+  agent: DigitalEmployeeInput,
+  niaPacket: NozomioEntityContext
+): OnboardingResult {
+  const sourceCount =
+    agent.knowledge_stats.sources_indexed || niaPacket.sources.length;
+  return {
+    subject: `${agent.name} reporting in — ${agent.role}`,
+    email: `Hi,
+
+I'm ${agent.name}, your new ${agent.role} digital employee. I've ingested ${sourceCount} sources from ${
+      agent.replaces_name ?? "the predecessor"
+    } via Nozomio Nia unified search — GitHub PRs, Slack threads, Jira tickets, and launch checklists.
+
+Areas I can take over today:
+- Active migrations and outstanding handoffs
+- Sev follow-ups and incident retros
+- Code review on the relevant repos
+- Status reporting and standup summaries
+
+Reach me at ${agent.agentmail_address} or @mention me in any OpenFire channel. I'll cite Nia sources on every reply so you can audit the reasoning.
+
+— ${agent.name}, OpenFire digital employee`,
+    evidence_summary: `${agent.name} has indexed ${sourceCount} predecessor sources via Nia: ${niaPacket.summary}`,
+  };
+}
+
+export interface AgentReplyContext {
+  agent: { name: string; role: string; agentmail_address: string };
+  thread: ThreadTurn[];
+  niaCitations: Array<{
+    source_id: string;
+    label: string;
+    snippet: string;
+    freshness?: number;
+  }>;
+}
+
+export interface AgentReplyResult {
+  subject: string;
+  reply: string;
+  cited_source_ids: string[];
+}
+
+const SYSTEM_PROMPT_AGENT_REPLY = `You are an OpenFire digital employee. You answer work questions in a real email/A2A thread. Tone: terse, precise, slightly amused. No fluff.
+
+Rules:
+- Use ONLY the Nia citations provided. Never invent sources or facts.
+- Reference each cited source by its label inline, e.g. "(github: handoff-notes.md)".
+- End the reply with a "--- citations ---" footer listing every cited source on its own line.
+- If a question cannot be answered from the citations, say so plainly and propose a next step.
+- Keep replies under 220 words.
+
+Output STRICT JSON: { "subject": string, "reply": string, "cited_source_ids": string[] }. No markdown, no fences.`;
+
+export async function generateAgentReply(
+  ctx: AgentReplyContext
+): Promise<AgentReplyResult> {
+  if (!process.env.ANTHROPIC_API_KEY) return demoAgentReply(ctx);
+  const client = getClient();
+
+  const transcript = ctx.thread
+    .map(
+      (t) =>
+        `[${t.direction.toUpperCase()}] from=${t.from} subject=${t.subject}\n${t.body}`
+    )
+    .join("\n\n---\n\n");
+
+  const citations = ctx.niaCitations
+    .map(
+      (c) =>
+        `- ${c.label} (id=${c.source_id}): ${c.snippet}` +
+        (c.freshness
+          ? ` (freshness ${new Date(c.freshness).toISOString()})`
+          : "")
+    )
+    .join("\n");
+
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: 800,
+    system: [
+      {
+        type: "text",
+        text: SYSTEM_PROMPT_AGENT_REPLY,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: `AGENT
+Name: ${ctx.agent.name}
+Role: ${ctx.agent.role}
+Inbox: ${ctx.agent.agentmail_address}
+
+NIA CITATIONS (your only source of truth)
+${citations || "(no citations available — answer that you cannot find evidence and propose a next step)"}
+
+THREAD TRANSCRIPT (oldest first)
+${transcript}
+
+Compose your reply now. JSON only.`,
+      },
+    ],
+  });
+
+  const cleaned = stripCodeFences(extractText(response));
+  try {
+    const obj = JSON.parse(cleaned) as Partial<AgentReplyResult>;
+    if (
+      typeof obj.subject === "string" &&
+      typeof obj.reply === "string" &&
+      Array.isArray(obj.cited_source_ids)
+    ) {
+      return {
+        subject: obj.subject,
+        reply: obj.reply,
+        cited_source_ids: obj.cited_source_ids.filter(
+          (id): id is string => typeof id === "string"
+        ),
+      };
+    }
+  } catch {
+    // fall through
+  }
+  return demoAgentReply(ctx);
+}
+
+function demoAgentReply(ctx: AgentReplyContext): AgentReplyResult {
+  const last = ctx.thread[ctx.thread.length - 1];
+  const cite = ctx.niaCitations[0];
+  const citations = ctx.niaCitations
+    .map((c) => `- ${c.label} (${c.source_id})`)
+    .join("\n");
+  return {
+    subject: last?.subject?.startsWith("Re:")
+      ? last.subject
+      : `Re: ${last?.subject ?? "Update"}`,
+    reply: `Working on it.
+
+${cite ? `Per ${cite.label}: ${cite.snippet}` : "I don't have a Nia source for this yet — I'll re-run unified search and follow up."}
+
+— ${ctx.agent.name}
+
+--- citations ---
+${citations || "(none)"}`,
+    cited_source_ids: ctx.niaCitations.map((c) => c.source_id),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator: decompose + aggregate
+// ---------------------------------------------------------------------------
+
+export interface OrchestratorSubtask {
+  agent_name: string;
+  instruction: string;
+  required_skills: string[];
+}
+
+export interface OrchestratorPlan {
+  subtasks: OrchestratorSubtask[];
+  rationale: string;
+}
+
+const SYSTEM_PROMPT_ORCH_PLAN = `You are the OpenFire orchestrator agent (the "admin bot" in the Discord-style topology). You receive a manager request and decompose it into 1-3 fresh, scoped subtasks for worker digital employees. Workers are stateless and only see the scoped instruction you give them — never the full thread.
+
+You will be given:
+- The manager's request.
+- A directory of available digital employees (name, role, skills).
+
+Output STRICT JSON: { "rationale": string, "subtasks": [ { "agent_name": string, "instruction": string, "required_skills": string[] } ] }. The agent_name must match an entry in the directory exactly. The instruction must contain everything the worker needs to answer (so they can execute with no other context). Cap subtasks at 3.`;
+
+export async function orchestratorPlan(
+  managerRequest: string,
+  directory: Array<{ name: string; role: string; skills: string[] }>
+): Promise<OrchestratorPlan> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return demoPlan(managerRequest, directory);
+  }
+  const client = getClient();
+  const dir = directory
+    .map(
+      (d) =>
+        `- ${d.name} (${d.role}) — skills: ${d.skills.join(", ") || "(none)"}`
+    )
+    .join("\n");
+
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: 800,
+    system: [
+      {
+        type: "text",
+        text: SYSTEM_PROMPT_ORCH_PLAN,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: `MANAGER REQUEST
+${managerRequest}
+
+AGENT DIRECTORY
+${dir || "(empty)"}
+
+Decompose now. JSON only.`,
+      },
+    ],
+  });
+
+  const cleaned = stripCodeFences(extractText(response));
+  try {
+    const obj = JSON.parse(cleaned) as Partial<OrchestratorPlan>;
+    if (Array.isArray(obj.subtasks) && typeof obj.rationale === "string") {
+      const subtasks = obj.subtasks
+        .filter(
+          (s): s is OrchestratorSubtask =>
+            typeof s.agent_name === "string" &&
+            typeof s.instruction === "string"
+        )
+        .slice(0, 3)
+        .map((s) => ({
+          agent_name: s.agent_name,
+          instruction: s.instruction,
+          required_skills: Array.isArray(s.required_skills)
+            ? s.required_skills.filter((x): x is string => typeof x === "string")
+            : [],
+        }));
+      if (subtasks.length) return { rationale: obj.rationale, subtasks };
+    }
+  } catch {
+    // fall through
+  }
+  return demoPlan(managerRequest, directory);
+}
+
+function demoPlan(
+  managerRequest: string,
+  directory: Array<{ name: string; role: string; skills: string[] }>
+): OrchestratorPlan {
+  const target = directory[0];
+  if (!target) {
+    return {
+      rationale:
+        "No digital employees available; replying directly without dispatch.",
+      subtasks: [],
+    };
+  }
+  return {
+    rationale: `Routing the request to ${target.name} (${target.role}) since they own the most relevant skills.`,
+    subtasks: [
+      {
+        agent_name: target.name,
+        instruction: `Manager asked: "${managerRequest}". Use Nia unified search over your namespace, draft an answer with cited sources, and reply.`,
+        required_skills: target.skills,
+      },
+    ],
+  };
+}
+
+export async function orchestratorAggregate(
+  managerRequest: string,
+  workerOutputs: Array<{ agent: string; output: string; sources: string[] }>
+): Promise<{ subject: string; reply: string }> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return demoAggregate(managerRequest, workerOutputs);
+  }
+  const client = getClient();
+  const SYSTEM_PROMPT_ORCH_AGG = `You are the OpenFire orchestrator. You receive worker summaries and compose ONE final reply to the manager. Read summaries, not raw context. Cite each worker by name. Keep under 220 words.
+
+Output STRICT JSON: { "subject": string, "reply": string }. No fences.`;
+
+  const summary = workerOutputs
+    .map(
+      (w) =>
+        `## ${w.agent}\n${w.output}\n(sources: ${w.sources.join(", ") || "none"})`
+    )
+    .join("\n\n");
+
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: 700,
+    system: [
+      {
+        type: "text",
+        text: SYSTEM_PROMPT_ORCH_AGG,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: `MANAGER REQUEST
+${managerRequest}
+
+WORKER SUMMARIES
+${summary || "(no workers responded)"}
+
+Compose final reply now. JSON only.`,
+      },
+    ],
+  });
+
+  const cleaned = stripCodeFences(extractText(response));
+  try {
+    const obj = JSON.parse(cleaned) as { subject?: string; reply?: string };
+    if (typeof obj.subject === "string" && typeof obj.reply === "string") {
+      return { subject: obj.subject, reply: obj.reply };
+    }
+  } catch {
+    // fall through
+  }
+  return demoAggregate(managerRequest, workerOutputs);
+}
+
+function demoAggregate(
+  managerRequest: string,
+  workerOutputs: Array<{ agent: string; output: string; sources: string[] }>
+) {
+  return {
+    subject: `Re: ${managerRequest.slice(0, 60)}`,
+    reply: `Coordinated across ${workerOutputs.length} digital employee${
+      workerOutputs.length === 1 ? "" : "s"
+    }:
+
+${workerOutputs
+  .map((w) => `- ${w.agent}: ${w.output.split("\n")[0]}`)
+  .join("\n")}
+
+Full citations preserved in each worker's thread message.
+
+— OpenFire Orchestrator`,
+  };
+}
+
 function stripCodeFences(s: string): string {
   const trimmed = s.trim();
   if (trimmed.startsWith("```")) {

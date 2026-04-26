@@ -28,10 +28,75 @@ function getInboxAddress() {
 
 export interface SendEmailParams {
   to: string;
+  cc?: string[];
+  from?: string; // override the default inbox; used for per-agent inboxes
   subject: string;
   body: string; // plain text or HTML
   thread_id?: string;
   reply_to_message_id?: string;
+}
+
+export interface CreateInboxResult {
+  inbox_id: string;
+  address: string;
+}
+
+/**
+ * Provision a new AgentMail inbox for a digital employee.
+ * Falls back to a synthetic address if no API key is set so demos run.
+ */
+export async function createInbox(
+  localPart: string
+): Promise<CreateInboxResult> {
+  const safeLocal = localPart
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+
+  const domain = process.env.AGENTMAIL_DOMAIN ?? "demo.agentmail.to";
+
+  if (!process.env.AGENTMAIL_API_KEY) {
+    return {
+      inbox_id: `inbox_sim_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      address: `${safeLocal}.openfire@${domain}`,
+    };
+  }
+
+  const res = await fetch(`${AGENTMAIL_BASE_URL}/v1/inboxes`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${getApiKey()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      local_part: safeLocal,
+      domain,
+      display_name: `${safeLocal} (OpenFire digital employee)`,
+    }),
+  });
+
+  if (!res.ok) {
+    console.warn(
+      `[agentmail] createInbox failed (${res.status}); falling back to synthetic address`
+    );
+    return {
+      inbox_id: `inbox_sim_${Date.now()}`,
+      address: `${safeLocal}.openfire@${domain}`,
+    };
+  }
+
+  const data = (await res.json()) as {
+    id?: string;
+    inbox_id?: string;
+    address?: string;
+    email?: string;
+  };
+  return {
+    inbox_id: data.inbox_id ?? data.id ?? `inbox_${Date.now()}`,
+    address: data.address ?? data.email ?? `${safeLocal}.openfire@${domain}`,
+  };
 }
 
 export interface SendEmailResult {
@@ -62,8 +127,9 @@ export async function sendEmail(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from: getInboxAddress(),
+      from: params.from ?? getInboxAddress(),
       to: params.to,
+      cc: params.cc,
       subject: params.subject,
       text: params.body,
       thread_id: params.thread_id,

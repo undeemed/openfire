@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, use } from "react";
+import { useRouter } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Badge } from "@/components/ui/badge";
@@ -50,6 +51,28 @@ export default function EmployeeDetailPage({
     latestDecision ? { decision_id: latestDecision._id as never } : "skip"
   );
   const [modalOpen, setModalOpen] = useState(false);
+  const [hireBusy, setHireBusy] = useState(false);
+  const [hireError, setHireError] = useState<string | null>(null);
+  const router = useRouter();
+
+  const hireDigitalReplacement = async () => {
+    setHireBusy(true);
+    setHireError(null);
+    try {
+      const res = await fetch("/api/hire", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employee_id: id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "hire failed");
+      router.push(`/digital-employees/${data.digital_employee_id}`);
+    } catch (e: unknown) {
+      setHireError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHireBusy(false);
+    }
+  };
 
   if (employee === undefined) {
     return (
@@ -109,6 +132,40 @@ export default function EmployeeDetailPage({
           </div>
         </div>
       </section>
+
+      {emp.status === "fired" ? (
+        <section>
+          <SectionLabel>Hire Digital Replacement</SectionLabel>
+          <div className="border border-[var(--border)] bg-[var(--surface)] flex overflow-hidden">
+            <div className="w-[3px] shrink-0 bg-[var(--accent)]" />
+            <div className="flex-1 p-5 space-y-4">
+              <p className="text-[11px] font-mono text-[var(--text-muted)] leading-relaxed">
+                Spawn a digital employee with {emp.name}&apos;s institutional
+                knowledge. Provisions a real AgentMail inbox, transfers the
+                Nia source bundle into a fresh entity namespace, publishes an
+                A2A agent card, and sends an onboarding email from the new
+                inbox.
+              </p>
+              <Button
+                onClick={hireDigitalReplacement}
+                disabled={hireBusy}
+                variant="default"
+                size="sm"
+              >
+                {hireBusy ? (
+                  <Loader2 className="h-3 w-3 animate-spin mr-2" />
+                ) : null}
+                Hire Digital Replacement →
+              </Button>
+              {hireError ? (
+                <div className="border border-[var(--border)] bg-[var(--surface-raised)] p-3 text-[10px] font-mono text-[var(--accent)]">
+                  {hireError}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       {/* Latest decision */}
       {latestDecision ? (
