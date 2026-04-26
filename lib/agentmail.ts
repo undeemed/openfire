@@ -111,7 +111,12 @@ export async function listThreadMessages(
       cache: "no-store",
     }
   );
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(
+      `AgentMail listThreadMessages failed (${res.status}): ${txt}`,
+    );
+  }
   const data = (await res.json()) as { messages?: ThreadMessage[] };
   return data.messages ?? [];
 }
@@ -126,7 +131,19 @@ export function verifyWebhookSignature(
 ): boolean {
   const secret = process.env.AGENTMAIL_WEBHOOK_SECRET;
   if (!secret) {
-    console.warn("[agentmail] no webhook secret set; skipping verification");
+    // In production, reject the webhook entirely. Allowing unsigned
+    // payloads through would let any caller forge "inbound" emails on
+    // arbitrary threads — pretending to be the fired employee — and
+    // trigger calendar invites + Claude reasoning against attacker data.
+    if (process.env.NODE_ENV === "production") {
+      console.error(
+        "[agentmail] AGENTMAIL_WEBHOOK_SECRET unset in production; refusing webhook",
+      );
+      return false;
+    }
+    console.warn(
+      "[agentmail] no webhook secret set (non-prod); accepting payload",
+    );
     return true;
   }
   if (!signatureHeader) return false;

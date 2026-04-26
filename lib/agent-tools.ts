@@ -60,7 +60,7 @@ export const TOOL_SCHEMAS: Anthropic.Tool[] = [
   {
     name: "search_employee_history",
     description:
-      "Search the employee's prior decision reasonings and email thread bodies for substring matches. Use this to stay consistent with previous decisions on rehires or repeat offenders. Returns up to 5 hits ordered newest first.",
+      "Search the employee's prior decision reasonings and email thread bodies for substring matches. Returns { totalDecisionsScanned, totalMessagesScanned, hits } so you can tell 'no history exists at all' (totalDecisionsScanned=0) apart from 'history exists but query did not match' (totalDecisionsScanned>0, hits=[]). Up to 5 hits, newest first.",
     input_schema: {
       type: "object",
       properties: {
@@ -127,11 +127,17 @@ export interface HistoryHit {
   source: "reasoning" | "message";
 }
 
+export interface HistorySearchResult {
+  totalDecisionsScanned: number;
+  totalMessagesScanned: number;
+  hits: HistoryHit[];
+}
+
 export interface ToolDeps {
   /** Lazy fetch of the employee's full Nozomio context (cached per loop). */
   getNozomioContext: () => Promise<NozomioEntityContext>;
   /** Search prior decisions + thread messages for this employee. */
-  searchEmployeeHistory: (query: string) => Promise<HistoryHit[]>;
+  searchEmployeeHistory: (query: string) => Promise<HistorySearchResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,8 +213,11 @@ export async function runTool(
       if (!input?.query || typeof input.query !== "string") {
         return errorOut("query is required and must be a string");
       }
-      const hits = await deps.searchEmployeeHistory(input.query);
-      return { output: { query: input.query, hits }, is_error: false };
+      const result = await deps.searchEmployeeHistory(input.query);
+      return {
+        output: { query: input.query, ...result },
+        is_error: false,
+      };
     }
 
     case "escalate_to_human": {

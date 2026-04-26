@@ -240,10 +240,20 @@ export const markSent = mutation({
   handler: async (ctx, args) => {
     const d = await ctx.db.get(args.id);
     if (!d) throw new Error("Decision not found");
+    // Only flip to "sent" from a state where sending is meaningful.
+    // Calling markSent on rejected/escalated/already-sent must not
+    // resurrect an employee or re-send an email.
+    if (d.status === "sent") return { ok: true, alreadySent: true };
+    if (d.status !== "pending" && d.status !== "approved") {
+      throw new Error(
+        `markSent: cannot transition from ${d.status} to sent`,
+      );
+    }
     await ctx.db.patch(args.id, {
       status: "sent",
       ...(args.thread_id ? { agentmail_thread_id: args.thread_id } : {}),
     });
     await ctx.db.patch(d.employee_id, { status: "fired" });
+    return { ok: true, alreadySent: false };
   },
 });

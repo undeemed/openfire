@@ -1,13 +1,19 @@
 import { query } from "./_generated/server";
 import { v } from "convex/values";
 
+const MAX_DECISIONS_SCANNED = 20;
+const MAX_MESSAGES_PER_DECISION = 50;
+const MAX_HITS = 5;
+
 /**
  * History search backing the agent's `search_employee_history` tool.
  *
  * Substring match (case-insensitive) over the employee's prior decision
  * reasonings and the bodies of email messages tied to those decisions.
- * No full-text index — typical employees have <10 prior decisions and
- * <50 messages, so a small linear scan is fine.
+ * Bounded scan: at most 20 decisions × 50 messages each. The agent gets
+ * back the count of what was scanned so it can distinguish "no history"
+ * from "history exists but no match" — a meaningful difference for
+ * consistency-checking on rehires.
  */
 export const searchForEmployee = query({
   args: {
@@ -16,13 +22,19 @@ export const searchForEmployee = query({
   },
   handler: async (ctx, args) => {
     const needle = args.query.trim().toLowerCase();
-    if (!needle) return [];
+    if (!needle) {
+      return {
+        totalDecisionsScanned: 0,
+        totalMessagesScanned: 0,
+        hits: [],
+      };
+    }
 
     const decisions = await ctx.db
       .query("decisions")
       .withIndex("by_employee", (q) => q.eq("employee_id", args.employee_id))
       .order("desc")
-      .collect();
+      .take(MAX_DECISIONS_SCANNED);
 
     const hits: Array<{
       decision_id: string;
@@ -31,7 +43,9 @@ export const searchForEmployee = query({
       source: "reasoning" | "message";
     }> = [];
 
-    for (const d of decisions) {
+    let totalMessagesScanned = 0;
+
+    outer: for (const d of decisions) {
       if (d.reasoning.toLowerCase().includes(needle)) {
         hits.push({
           decision_id: d._id,
@@ -39,12 +53,15 @@ export const searchForEmployee = query({
           snippet: snippet(d.reasoning, needle),
           source: "reasoning",
         });
+        if (hits.length >= MAX_HITS) break;
       }
 
       const messages = await ctx.db
         .query("messages")
         .withIndex("by_decision", (q) => q.eq("decision_id", d._id))
-        .collect();
+        .take(MAX_MESSAGES_PER_DECISION);
+
+      totalMessagesScanned += messages.length;
 
       for (const m of messages) {
         if (m.body.toLowerCase().includes(needle)) {
@@ -54,17 +71,24 @@ export const searchForEmployee = query({
             snippet: snippet(m.body, needle),
             source: "message",
           });
+          if (hits.length >= MAX_HITS) break outer;
         }
       }
-
-      if (hits.length >= 5) break;
     }
 
-    return hits.slice(0, 5);
+    return {
+      totalDecisionsScanned: decisions.length,
+      totalMessagesScanned,
+      hits,
+    };
   },
 });
 
 function snippet(text: string, needle: string): string {
+  // Match position computed against the lowercased copy, applied back to
+  // the original text. For ASCII this is identical; for non-ASCII,
+  // case-folding can change length and we may slice mid-grapheme. Good
+  // enough for the agent's debug context but not safe for user display.
   const idx = text.toLowerCase().indexOf(needle);
   if (idx < 0) return text.slice(0, 160);
   const start = Math.max(0, idx - 60);
