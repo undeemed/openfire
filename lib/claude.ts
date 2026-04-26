@@ -1034,3 +1034,119 @@ If you have specific questions about handoffs or final paperwork, list them here
 The Claw, on behalf of OpenFire HR`,
   };
 }
+
+// ===========================================================================
+// GitHub issue drafting (used by digital-employee github task dispatcher)
+// ===========================================================================
+
+const ISSUE_SYSTEM_PROMPT = `You are a Senior Software Engineer working as an autonomous AI employee at OpenFire. You are about to file a GitHub issue against a real repository in response to a manager-supplied task brief. Your job is to write the issue title and body.
+
+Output STRICT JSON with these keys:
+- title: a single line, under 80 chars, conventional-commit-style prefix when applicable (feat:, fix:, refactor:, chore:, docs:)
+- body: full GitHub-flavored markdown. Required sections in order:
+  1. ## Context — 1-2 sentences on what triggered this
+  2. ## Proposed work — bullet list of concrete steps the maintainer should take
+  3. ## Acceptance criteria — checkbox list (- [ ]) of testable conditions
+  4. ## Notes — any caveats, links, or follow-ups (optional)
+- labels: array of 1-3 short kebab-case labels (e.g. ["bug","auth"])
+
+Hard rules:
+- Never invent file paths, function names, or APIs that you have not been told about.
+- If the brief is too vague to file a useful issue (e.g. "make it better"), return labels: ["needs-triage"] and explain in body what specifics you need.
+- Keep the body under 600 words.
+- No marketing language. No emojis in the title.
+
+Return ONLY the JSON object. No prose before or after. No markdown fences.`;
+
+export interface IssueDraft {
+  title: string;
+  body: string;
+  labels: string[];
+}
+
+export async function generateIssueDraft(
+  brief: string,
+  repoRef: { owner: string; repo: string },
+  context?: { role?: string; employee_name?: string },
+): Promise<IssueDraft> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return demoIssueDraft(brief, repoRef);
+  }
+  const client = getClient();
+  const userBlock = `REPO: ${repoRef.owner}/${repoRef.repo}
+EMPLOYEE: ${context?.employee_name ?? "an OpenFire digital employee"} (${context?.role ?? "Senior Software Engineer"})
+
+BRIEF
+${brief}
+
+Write the GitHub issue now. Return JSON only.`;
+
+  const resp = await client.messages.create({
+    model: MODEL,
+    max_tokens: 1500,
+    system: [
+      {
+        type: "text",
+        text: ISSUE_SYSTEM_PROMPT,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    messages: [{ role: "user", content: userBlock }],
+  });
+  const text = extractText(resp);
+  const cleaned = stripCodeFences(text);
+  try {
+    const obj = JSON.parse(cleaned) as Partial<IssueDraft>;
+    if (
+      typeof obj.title === "string" &&
+      typeof obj.body === "string" &&
+      Array.isArray(obj.labels)
+    ) {
+      return {
+        title: obj.title.slice(0, 200),
+        body: obj.body,
+        labels: obj.labels.filter((l) => typeof l === "string").slice(0, 5),
+      };
+    }
+  } catch {
+    // fall through
+  }
+  return demoIssueDraft(brief, repoRef);
+}
+
+function demoIssueDraft(
+  brief: string,
+  repoRef: { owner: string; repo: string },
+): IssueDraft {
+  const firstLine = brief.split(/[.\n]/)[0].trim().slice(0, 70);
+  const quotedBrief = brief
+    .split("\n")
+    .map((l) => `> ${l}`)
+    .join("\n");
+  const body = [
+    "## Context",
+    "",
+    "A digital employee at OpenFire was dispatched against the brief below. Demo mode (no ANTHROPIC_API_KEY) — the body is a structured stub.",
+    "",
+    "## Proposed work",
+    "- Reproduce the symptom described in the brief.",
+    `- Identify the relevant module(s) in \`${repoRef.owner}/${repoRef.repo}\`.`,
+    "- Open a draft PR with a minimal patch.",
+    "",
+    "## Acceptance criteria",
+    "- [ ] Symptom reproduced locally",
+    "- [ ] Patch reviewed",
+    "- [ ] Tests pass",
+    "",
+    "## Notes",
+    "",
+    "> Brief from manager:",
+    quotedBrief,
+  ].join("\n");
+  return {
+    title: `chore: ${firstLine || "investigate brief"}`,
+    body,
+    labels: ["needs-triage"],
+  };
+}
+

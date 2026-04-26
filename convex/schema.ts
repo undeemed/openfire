@@ -179,12 +179,64 @@ export default defineSchema({
       sources_indexed: v.number(),
       last_indexed_at: v.number(),
     }),
+    // Worker-template type backing this employee. When set, the runtime
+    // can inject the matching template's tools (e.g. file_github_issue
+    // for engineer when a github resource is linked).
+    template_type: v.optional(
+      v.union(
+        v.literal("engineer"),
+        v.literal("gtm"),
+        v.literal("recruiter"),
+        v.literal("cse"),
+        v.literal("pm"),
+        v.literal("researcher")
+      )
+    ),
+    // External resources the employee can act on. Today only `github`
+    // has a real backend; other kinds are UI-mock badges so the
+    // hire-flow UX is uniform.
+    linked_resources: v.optional(
+      v.array(
+        v.object({
+          kind: v.union(
+            v.literal("github"),
+            v.literal("instagram"),
+            v.literal("twitter"),
+            v.literal("slack"),
+            v.literal("linkedin")
+          ),
+          // Free-form per-kind config (e.g. {owner, repo} for github,
+          // {handle} for instagram, {channel} for slack).
+          config: v.any(),
+          enabled: v.boolean(),
+          linked_at: v.number(),
+        })
+      )
+    ),
     created_at: v.number(),
   })
     .index("by_status", ["status"])
     .index("by_inbox", ["agentmail_address"])
     .index("by_replaces", ["replaces_employee_id"])
     .index("by_orchestrator", ["is_orchestrator"]),
+
+  github_issues: defineTable({
+    digital_employee_id: v.id("digital_employees"),
+    owner: v.string(),
+    repo: v.string(),
+    issue_number: v.number(),
+    issue_url: v.string(),
+    title: v.string(),
+    body: v.string(),
+    labels: v.array(v.string()),
+    /** Original task brief that prompted the issue. */
+    task_brief: v.string(),
+    /** True when no GITHUB_TOKEN was set so the issue was simulated. */
+    simulated: v.boolean(),
+    created_at: v.number(),
+  })
+    .index("by_employee", ["digital_employee_id"])
+    .index("by_repo", ["owner", "repo"]),
 
   hire_decisions: defineTable({
     digital_employee_id: v.id("digital_employees"),

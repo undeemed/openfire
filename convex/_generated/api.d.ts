@@ -16,6 +16,8 @@ import type * as decisions from "../decisions.js";
 import type * as digitalEmployees from "../digitalEmployees.js";
 import type * as emailHandler from "../emailHandler.js";
 import type * as employees from "../employees.js";
+import type * as githubAgent from "../githubAgent.js";
+import type * as githubIssues from "../githubIssues.js";
 import type * as hireAgent from "../hireAgent.js";
 import type * as hireDecisions from "../hireDecisions.js";
 import type * as messages from "../messages.js";
@@ -42,6 +44,8 @@ declare const fullApi: ApiFromModules<{
   digitalEmployees: typeof digitalEmployees;
   emailHandler: typeof emailHandler;
   employees: typeof employees;
+  githubAgent: typeof githubAgent;
+  githubIssues: typeof githubIssues;
   hireAgent: typeof hireAgent;
   hireDecisions: typeof hireDecisions;
   messages: typeof messages;
