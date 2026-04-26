@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, use } from "react";
+import { useRouter } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -46,6 +47,28 @@ export default function EmployeeDetailPage({
     latestDecision ? { decision_id: latestDecision._id as never } : "skip"
   );
   const [modalOpen, setModalOpen] = useState(false);
+  const [hireBusy, setHireBusy] = useState(false);
+  const [hireError, setHireError] = useState<string | null>(null);
+  const router = useRouter();
+
+  const hireDigitalReplacement = async () => {
+    setHireBusy(true);
+    setHireError(null);
+    try {
+      const res = await fetch("/api/hire", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employee_id: id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "hire failed");
+      router.push(`/digital-employees/${data.digital_employee_id}`);
+    } catch (e: unknown) {
+      setHireError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHireBusy(false);
+    }
+  };
 
   if (employee === undefined) {
     return (
@@ -106,6 +129,39 @@ export default function EmployeeDetailPage({
           nozomio: {emp.nozomio_entity_id}
         </div>
       </header>
+
+      {emp.status === "fired" ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Hire digital replacement</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-zinc-400">
+              Spawn a digital employee with {emp.name}&apos;s institutional
+              knowledge. Provisions a real AgentMail inbox, transfers the Nia
+              source bundle into a fresh entity namespace, publishes an A2A
+              agent card, and sends an onboarding email from the new inbox.
+            </p>
+            <div>
+              <Button
+                onClick={hireDigitalReplacement}
+                disabled={hireBusy}
+                variant="fire"
+              >
+                {hireBusy ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                ) : null}
+                Hire digital replacement
+              </Button>
+            </div>
+            {hireError ? (
+              <div className="rounded-md border border-red-800/60 bg-red-950/40 p-3 text-xs text-red-300">
+                {hireError}
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {latestDecision ? (
         <Card>
