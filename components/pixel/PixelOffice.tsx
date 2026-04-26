@@ -50,7 +50,6 @@ const CANVAS_H = ROWS * TILE * ZOOM;
 // Character sprite-sheet conventions (matches pixel-agents).
 const CHAR_FRAME_W = 16;
 const CHAR_FRAME_H = 32;
-const CHAR_FRAMES_PER_ROW = 7;
 const CHAR_SHEET_COUNT = 6;
 
 // Animation timing.
@@ -76,6 +75,8 @@ interface Character {
   frameTimer: number;
   /** Tint over the sprite when fired (gray-out). */
   tint?: "fired" | "court" | null;
+  /** Whether this entity wants the "type" anim while idle (busy worker / active employee). */
+  wantsType: boolean;
 }
 
 // ── Stations: where each entity belongs based on status ──────────
@@ -126,11 +127,9 @@ function tintFor(entity: OfficeEntity): Character["tint"] {
   return null;
 }
 
-function animFor(entity: OfficeEntity, isMoving: boolean): AnimState {
-  if (isMoving) return "walk";
-  if (entity.kind === "worker" && entity.busy) return "type";
-  if (entity.kind === "employee" && entity.status === "active") return "type";
-  return "idle";
+function wantsTypeFor(entity: OfficeEntity): boolean {
+  if (entity.kind === "worker") return Boolean(entity.busy);
+  return entity.status === "active";
 }
 
 // ── Asset loader ─────────────────────────────────────────────────
@@ -221,12 +220,14 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
           frame: 0,
           frameTimer: 0,
           tint: tintFor(ent),
+          wantsType: wantsTypeFor(ent),
         });
       } else {
         existing.targetCol = target.col;
         existing.targetRow = target.row;
         existing.tint = tintFor(ent);
         existing.paletteIdx = ent.paletteIdx % CHAR_SHEET_COUNT;
+        existing.wantsType = wantsTypeFor(ent);
       }
     }
 
@@ -279,15 +280,10 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
             ch.frame = (ch.frame + 1) % 4;
           }
         } else {
-          // At target. Pick anim based on entity intent encoded in tint.
+          // At target. Use the entity-driven wantsType flag set at sync.
           ch.x = ch.targetCol;
           ch.y = ch.targetRow;
-          // Default: idle. Type if the entity wants the busy animation.
-          // We don't have entity here — animFor was applied at sync; we
-          // approximate by reading tint plus a default rule.
-          const wantType =
-            ch.tint === null && (ch.id.startsWith("w") || ch.id.startsWith("worker"));
-          ch.anim = wantType ? "type" : "idle";
+          ch.anim = ch.wantsType && ch.tint !== "fired" ? "type" : "idle";
           ch.frameTimer += dt;
           if (ch.anim === "type") {
             if (ch.frameTimer >= TYPE_FRAME_DURATION) {

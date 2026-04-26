@@ -15,6 +15,7 @@
  * roster so the visual works without a backend deployed. This is the
  * mode used by the visual smoke test.
  */
+import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -45,6 +46,24 @@ interface ConvexWorker {
 }
 
 export default function OfficePage() {
+  return (
+    <Suspense fallback={<OfficeLoading />}>
+      <OfficePageInner />
+    </Suspense>
+  );
+}
+
+function OfficeLoading() {
+  return (
+    <div className="border border-[var(--border)] bg-[var(--surface)] p-16 text-center">
+      <p className="text-[10px] font-mono text-[var(--text-dim)] tracking-[0.2em] uppercase">
+        Loading office…
+      </p>
+    </div>
+  );
+}
+
+function OfficePageInner() {
   const sp = useSearchParams();
   const demo = sp.get("demo") === "1";
 
