@@ -58,18 +58,13 @@ export const runFireAgent = action({
         continue;
       }
 
-      // Lazy + memoized context fetch — the agent decides when (and if)
-      // to call fetch_nozomio_context. We cache so multiple calls within
-      // one loop don't hit Nozomio twice.
-      let cachedContext: Awaited<
-        ReturnType<typeof getEntityContext>
+      // Promise-based cache: parallel tool calls share one fetch instead of
+      // racing on a null check and triggering duplicate Nozomio requests.
+      let contextPromise: Promise<
+        Awaited<ReturnType<typeof getEntityContext>>
       > | null = null;
-      const getNozomioContext = async () => {
-        if (!cachedContext) {
-          cachedContext = await getEntityContext(employee.nozomio_entity_id);
-        }
-        return cachedContext;
-      };
+      const getNozomioContext = () =>
+        (contextPromise ??= getEntityContext(employee.nozomio_entity_id));
 
       const searchEmployeeHistory = async (q: string) =>
         await ctx.runQuery(api.agentHistory.searchForEmployee, {
