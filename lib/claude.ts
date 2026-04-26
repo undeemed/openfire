@@ -112,12 +112,94 @@ export async function evaluateEmployee(
   const client = getClient();
   const traces: ToolCallTrace[] = [];
 
+  // Plan-Execute: pre-fetch both data-gathering tools in parallel before
+  // starting the Claude loop. Claude always calls these first anyway;
+  // running them upfront eliminates 1-2 API round-trips and lets Claude
+  // skip straight to deciding. If pre-fetch fails for any reason, fall
+  // back to the freeform tool loop so a transient Nia/Convex error never
+  // aborts the whole evaluation.
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
       content: buildEvaluationUserMessage(employee, criteria),
     },
   ];
+
+  try {
+    const preStart = Date.now();
+    const rand = () => Math.random().toString(36).slice(2, 8);
+    const preNozomioId = `pre_nia_${Date.now()}_${rand()}`;
+    const preHistoryId = `pre_hist_${Date.now()}_${rand()}`;
+    const [preCtx, preHistory] = await Promise.all([
+      deps.getNozomioContext(),
+      deps.searchEmployeeHistory(employee.name),
+    ]);
+    const preDuration = Date.now() - preStart;
+
+    traces.push(
+      {
+        iteration: 0,
+        tool_name: "fetch_nozomio_context",
+        input_json: "{}",
+        output_json: JSON.stringify(preCtx),
+        is_error: false,
+        duration_ms: preDuration,
+      },
+      {
+        iteration: 0,
+        tool_name: "search_employee_history",
+        input_json: JSON.stringify({ query: employee.name }),
+        output_json: JSON.stringify({ query: employee.name, hits: preHistory }),
+        is_error: false,
+        duration_ms: preDuration,
+      },
+    );
+
+    // Synthetic conversation: pre-populate tool results so Claude starts
+    // with evidence in context and calls propose_decision/escalate immediately.
+    messages.push(
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use" as const,
+            id: preNozomioId,
+            name: "fetch_nozomio_context",
+            input: {},
+          },
+          {
+            type: "tool_use" as const,
+            id: preHistoryId,
+            name: "search_employee_history",
+            input: { query: employee.name },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result" as const,
+            tool_use_id: preNozomioId,
+            content: JSON.stringify(preCtx),
+            is_error: false,
+          },
+          {
+            type: "tool_result" as const,
+            tool_use_id: preHistoryId,
+            content: JSON.stringify({ query: employee.name, hits: preHistory }),
+            is_error: false,
+          },
+        ],
+      },
+    );
+  } catch (err) {
+    console.warn(
+      "[evaluateEmployee] pre-fetch failed, falling back to freeform tool loop:",
+      err,
+    );
+    // messages stays as just the user turn — Claude will call tools normally.
+  }
 
   let iteration = 0;
   let lastAssistantText = "";
