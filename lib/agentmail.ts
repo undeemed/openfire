@@ -126,8 +126,12 @@ export function verifyWebhookSignature(
 ): boolean {
   const secret = process.env.AGENTMAIL_WEBHOOK_SECRET;
   if (!secret) {
-    console.warn("[agentmail] no webhook secret set; skipping verification");
-    return true;
+    // Fail closed. Returning true on a missing secret would let any caller
+    // POST a forged webhook in any environment that hasn't configured one.
+    console.warn(
+      "[agentmail] AGENTMAIL_WEBHOOK_SECRET not set; rejecting webhook"
+    );
+    return false;
   }
   if (!signatureHeader) return false;
 
