@@ -1,41 +1,35 @@
 "use client";
 
 /**
- * PixelOffice — minimal pixel-art office that animates in real time
- * based on the entity list passed in.
+ * PixelOffice — pixel-art office that animates in real time based on
+ * the entity list passed in.
  *
  * Sprites and the 7-frame layout convention (walk × 3 + type × 2 +
  * read × 2 per direction; rows = down/up/right with left flipped from
- * right) are derived from the MIT-licensed pixel-agents project — see
- * public/assets/pixel/NOTICE.md.
+ * right) plus all furniture / floor / wall sprites are derived from the
+ * MIT-licensed pixel-agents project — see public/assets/pixel/NOTICE.md.
  *
- * The canvas is intentionally self-contained: no global state, no
- * external loop. It owns:
- *   - sprite-sheet preloading (six character sheets + one floor tile)
- *   - per-character state (position, target tile, direction, anim)
- *   - the rAF render loop
+ * Layout: a 30×18 tile world split into three rooms by a navy wall:
+ *   - Work area (left): wood floor, four desk-with-PC stations,
+ *     bookshelves on the top wall, plants by the entrance.
+ *   - Kitchen (top-right): tile floor, coffee machine + bin + clock.
+ *   - Meeting room (bottom-right): blue carpet, two sofas around a
+ *     coffee table, painting on the wall, plants in the corners.
  *
- * Movement: linear-tile lerp toward the target tile. No A*; the office
- * has no walls, so picking the closer axis first is enough to look
- * deliberate. Pathfinding can be added later if the layout grows.
+ * Walls are dark navy filled rectangles; the engine doesn't use the
+ * 16-bitmask wall atlas because for this static layout solid fills
+ * look cleaner. Doorways are explicit gaps in the wall fill.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-export type EntityStatus =
-  | "active"
-  | "pending"
-  | "fired"
-  | "spared";
+export type EntityStatus = "active" | "pending" | "fired" | "spared";
 
 export interface OfficeEntity {
   id: string;
   name: string;
-  /** Drives how the character is staged in the office. */
   kind: "employee" | "worker";
   status: EntityStatus | "in_progress" | "waiting_input" | "done" | "failed";
-  /** 0..5 — picks one of the six character sheets. */
   paletteIdx: number;
-  /** Optional: how busy the worker currently is. Triggers "type" anim. */
   busy?: boolean;
 }
 
@@ -47,12 +41,10 @@ const ROWS = 18;
 const CANVAS_W = COLS * TILE * ZOOM;
 const CANVAS_H = ROWS * TILE * ZOOM;
 
-// Character sprite-sheet conventions (matches pixel-agents).
 const CHAR_FRAME_W = 16;
 const CHAR_FRAME_H = 32;
 const CHAR_SHEET_COUNT = 6;
 
-// Animation timing.
 const WALK_SPEED_TILES_PER_SEC = 2.4;
 const WALK_FRAME_DURATION = 0.18;
 const TYPE_FRAME_DURATION = 0.32;
@@ -64,7 +56,6 @@ interface Character {
   id: string;
   name: string;
   paletteIdx: number;
-  /** Floating-point tile coords (smooth motion). */
   x: number;
   y: number;
   targetCol: number;
@@ -73,52 +64,87 @@ interface Character {
   anim: AnimState;
   frame: number;
   frameTimer: number;
-  /** Tint over the sprite when fired (gray-out). */
   tint?: "fired" | "court" | null;
-  /** Whether this entity wants the "type" anim while idle (busy worker / active employee). */
-  wantsType: boolean;
 }
 
-// ── Stations: where each entity belongs based on status ──────────
+// ── Room layout ──────────────────────────────────────────────────
 
-interface Tile {
-  col: number;
-  row: number;
+const WORK_ROOM = { c0: 1, r0: 1, c1: 14, r1: 17 };
+const KITCHEN = { c0: 16, r0: 1, c1: 29, r1: 7 };
+const MEETING = { c0: 16, r0: 8, c1: 29, r1: 17 };
+
+interface Rect {
+  c: number;
+  r: number;
+  w: number;
+  h: number;
 }
-
-const EXIT_DOOR: Tile = { col: COLS - 2, row: ROWS - 2 };
-const COURT_TILES: Tile[] = [
-  { col: 14, row: 8 },
-  { col: 15, row: 8 },
-  { col: 16, row: 8 },
+const WALL_FILLS: Rect[] = [
+  { c: 0, r: 0, w: COLS, h: 1 },
+  { c: 0, r: ROWS - 1, w: COLS, h: 1 },
+  { c: 0, r: 0, w: 1, h: ROWS },
+  { c: COLS - 1, r: 0, w: 1, h: ROWS },
+  // Vertical divider work | (kitchen + meeting), with two doorway gaps.
+  { c: 14, r: 1, w: 2, h: 4 },
+  { c: 14, r: 6, w: 2, h: 5 },
+  { c: 14, r: 12, w: 2, h: 5 },
+  // Horizontal divider kitchen | meeting.
+  { c: 16, r: 7, w: 13, h: 1 },
 ];
 
-function employeeDesk(idx: number): Tile {
-  // Two rows of desks along the top.
-  const perRow = 6;
-  const col = 3 + (idx % perRow) * 4;
-  const row = 2 + Math.floor(idx / perRow) * 3;
-  return { col, row };
-}
+const EXIT_DOOR = { col: COLS - 2, row: ROWS - 2 };
+const DOOR_HIGHLIGHTS: Rect[] = [
+  { c: 14, r: 5, w: 2, h: 1 },
+  { c: 14, r: 11, w: 2, h: 1 },
+];
 
-function workerStation(idx: number): Tile {
-  // Bottom rows for AI workers.
-  const perRow = 6;
-  const col = 3 + (idx % perRow) * 4;
-  const row = ROWS - 5 + Math.floor(idx / perRow) * 2;
-  return { col, row };
-}
+// Court tiles sit on the carpet just below the painting, before the
+// sofas and coffee table at row 11+.
+const COURT_TILES = [
+  { col: 21, row: 9 },
+  { col: 22, row: 9 },
+  { col: 23, row: 9 },
+];
 
-function targetFor(entity: OfficeEntity, idx: number): Tile {
+// Per-room floor tints applied via canvas `multiply` composite over the
+// grayscale floor tile, so we get warm wood / cool carpet from a single
+// gray sprite atlas.
+const FLOOR_TINTS: Record<FloorKind, string | null> = {
+  wood: "#a07a48",   // warm brown
+  tile: "#f0ece4",   // pale cream — barely shifts the gray
+  carpet: "#5d7392", // muted slate-blue
+  wall: null,
+};
+
+// Characters sit one tile SOUTH of the desk so their torso is visible
+// "behind" the desk surface and their feet rest on the chair tile.
+const EMPLOYEE_DESKS = [
+  { col: 4, row: 9 },
+  { col: 8, row: 9 },
+  { col: 4, row: 14 },
+  { col: 8, row: 14 },
+];
+
+// Workers cluster on the right side of the work room near the divider.
+const WORKER_DESKS = [
+  { col: 11, row: 9 },
+  { col: 12, row: 14 },
+  { col: 11, row: 14 },
+  { col: 12, row: 9 },
+];
+
+function targetFor(
+  entity: OfficeEntity,
+  idx: number
+): { col: number; row: number } {
   if (entity.kind === "employee") {
     if (entity.status === "fired") return EXIT_DOOR;
     if (entity.status === "pending")
       return COURT_TILES[idx % COURT_TILES.length];
-    return employeeDesk(idx); // active + spared sit at desks
+    return EMPLOYEE_DESKS[idx % EMPLOYEE_DESKS.length];
   }
-  // worker
   if (entity.status === "fired") return EXIT_DOOR;
-  return workerStation(idx);
+  return WORKER_DESKS[idx % WORKER_DESKS.length];
 }
 
 function tintFor(entity: OfficeEntity): Character["tint"] {
@@ -127,16 +153,127 @@ function tintFor(entity: OfficeEntity): Character["tint"] {
   return null;
 }
 
-function wantsTypeFor(entity: OfficeEntity): boolean {
-  if (entity.kind === "worker") return Boolean(entity.busy);
-  return entity.status === "active";
+// ── Floor plan ───────────────────────────────────────────────────
+type FloorKind = "wood" | "tile" | "carpet" | "wall";
+
+function floorAt(col: number, row: number): FloorKind {
+  if (col >= WORK_ROOM.c0 && col < WORK_ROOM.c1 && row >= WORK_ROOM.r0 && row < WORK_ROOM.r1)
+    return "wood";
+  if (col >= KITCHEN.c0 && col < KITCHEN.c1 && row >= KITCHEN.r0 && row < KITCHEN.r1)
+    return "tile";
+  if (col >= MEETING.c0 && col < MEETING.c1 && row >= MEETING.r0 && row < MEETING.r1)
+    return "carpet";
+  return "wall";
 }
+
+// ── Furniture ────────────────────────────────────────────────────
+
+interface FurnitureInstance {
+  asset: string;
+  col: number;
+  row: number;
+  anchorY?: number;
+}
+
+const FURNITURE: FurnitureInstance[] = [
+  // Bookshelves along work-room top wall
+  { asset: "DOUBLE_BOOKSHELF", col: 1, row: 1 },
+  { asset: "DOUBLE_BOOKSHELF", col: 4, row: 1 },
+  { asset: "BOOKSHELF", col: 8, row: 2 },
+  { asset: "BOOKSHELF", col: 11, row: 2 },
+  // Desks (3 wide × 2 tall) — character sits at row+1
+  { asset: "DESK_FRONT", col: 3, row: 7 },
+  { asset: "DESK_FRONT", col: 7, row: 7 },
+  { asset: "DESK_FRONT", col: 3, row: 12 },
+  { asset: "DESK_FRONT", col: 7, row: 12 },
+  // PCs on top of desks (centered on middle desk tile)
+  { asset: "PC_FRONT_ON_1", col: 4, row: 6 },
+  { asset: "PC_FRONT_ON_1", col: 8, row: 6 },
+  { asset: "PC_FRONT_ON_1", col: 4, row: 11 },
+  { asset: "PC_FRONT_ON_1", col: 8, row: 11 },
+  // Plants in the work room — corners only so they don't block desks.
+  { asset: "LARGE_PLANT", col: 1, row: 16 },
+  { asset: "PLANT", col: 12, row: 1 },
+  { asset: "PLANT", col: 1, row: 8 },
+  // Worker zone gets WOODEN_CHAIRs facing up; characters sit on them.
+  { asset: "WOODEN_CHAIR_BACK", col: 11, row: 8 },
+  { asset: "WOODEN_CHAIR_BACK", col: 12, row: 8 },
+  { asset: "WOODEN_CHAIR_BACK", col: 11, row: 13 },
+  { asset: "WOODEN_CHAIR_BACK", col: 12, row: 13 },
+  // Kitchen
+  { asset: "COFFEE", col: 17, row: 1 },
+  { asset: "COFFEE", col: 19, row: 1 },
+  { asset: "BIN", col: 22, row: 2 },
+  { asset: "CLOCK", col: 24, row: 1 },
+  { asset: "PLANT", col: 27, row: 2 },
+  // Meeting room
+  { asset: "COFFEE_TABLE", col: 21, row: 13 },
+  { asset: "SOFA_FRONT", col: 21, row: 11 },
+  { asset: "SOFA_FRONT", col: 24, row: 11 },
+  { asset: "CUSHIONED_CHAIR_FRONT", col: 21, row: 15 },
+  { asset: "CUSHIONED_CHAIR_FRONT", col: 24, row: 15 },
+  { asset: "SMALL_PAINTING", col: 22, row: 8 },
+  { asset: "PLANT", col: 17, row: 11 },
+  { asset: "PLANT", col: 27, row: 11 },
+  { asset: "CACTUS", col: 16, row: 16 },
+];
+
+const FURN_SIZE: Record<string, { tw: number; th: number; pw: number; ph: number }> = {
+  DESK_FRONT: { tw: 3, th: 2, pw: 48, ph: 32 },
+  DESK_SIDE: { tw: 1, th: 4, pw: 16, ph: 64 },
+  PC_FRONT_ON_1: { tw: 1, th: 1, pw: 16, ph: 32 },
+  WOODEN_CHAIR_BACK: { tw: 1, th: 1, pw: 16, ph: 32 },
+  BOOKSHELF: { tw: 2, th: 1, pw: 32, ph: 16 },
+  DOUBLE_BOOKSHELF: { tw: 2, th: 1, pw: 32, ph: 32 },
+  CLOCK: { tw: 1, th: 1, pw: 16, ph: 32 },
+  COFFEE: { tw: 1, th: 1, pw: 16, ph: 16 },
+  COFFEE_TABLE: { tw: 2, th: 2, pw: 32, ph: 32 },
+  CUSHIONED_CHAIR_FRONT: { tw: 1, th: 1, pw: 16, ph: 16 },
+  PLANT: { tw: 1, th: 1, pw: 16, ph: 32 },
+  LARGE_PLANT: { tw: 2, th: 2, pw: 32, ph: 48 },
+  SOFA_FRONT: { tw: 2, th: 1, pw: 32, ph: 16 },
+  BIN: { tw: 1, th: 1, pw: 16, ph: 16 },
+  SMALL_PAINTING: { tw: 1, th: 1, pw: 16, ph: 32 },
+  CACTUS: { tw: 1, th: 1, pw: 16, ph: 32 },
+};
+
+const FURN_PATH: Record<string, string> = {
+  DESK_FRONT: "/assets/pixel/furniture/DESK/DESK_FRONT.png",
+  DESK_SIDE: "/assets/pixel/furniture/DESK/DESK_SIDE.png",
+  PC_FRONT_ON_1: "/assets/pixel/furniture/PC/PC_FRONT_ON_1.png",
+  WOODEN_CHAIR_BACK: "/assets/pixel/furniture/WOODEN_CHAIR/WOODEN_CHAIR_BACK.png",
+  BOOKSHELF: "/assets/pixel/furniture/BOOKSHELF/BOOKSHELF.png",
+  DOUBLE_BOOKSHELF: "/assets/pixel/furniture/DOUBLE_BOOKSHELF/DOUBLE_BOOKSHELF.png",
+  CLOCK: "/assets/pixel/furniture/CLOCK/CLOCK.png",
+  COFFEE: "/assets/pixel/furniture/COFFEE/COFFEE.png",
+  COFFEE_TABLE: "/assets/pixel/furniture/COFFEE_TABLE/COFFEE_TABLE.png",
+  CUSHIONED_CHAIR_FRONT: "/assets/pixel/furniture/CUSHIONED_CHAIR/CUSHIONED_CHAIR_FRONT.png",
+  PLANT: "/assets/pixel/furniture/PLANT/PLANT.png",
+  LARGE_PLANT: "/assets/pixel/furniture/LARGE_PLANT/LARGE_PLANT.png",
+  SOFA_FRONT: "/assets/pixel/furniture/SOFA/SOFA_FRONT.png",
+  BIN: "/assets/pixel/furniture/BIN/BIN.png",
+  SMALL_PAINTING: "/assets/pixel/furniture/SMALL_PAINTING/SMALL_PAINTING.png",
+  CACTUS: "/assets/pixel/furniture/CACTUS/CACTUS.png",
+};
+
+const FLOOR_PATHS: Record<FloorKind, string | null> = {
+  // floor_5 is the most uniform light tile — least texture, best
+  // canvas for runtime tinting via `multiply`.
+  wood: "/assets/pixel/floors/floor_5.png",
+  tile: "/assets/pixel/floors/floor_4.png",
+  carpet: "/assets/pixel/floors/floor_5.png",
+  wall: null,
+};
+
+const WALL_FILL_COLOR = "#1a1f2e";
+const VOID_BG = "#0a0a0c";
 
 // ── Asset loader ─────────────────────────────────────────────────
 
 interface Assets {
   charSheets: HTMLImageElement[];
-  floor: HTMLImageElement;
+  floors: Record<FloorKind, HTMLImageElement | null>;
+  furniture: Record<string, HTMLImageElement>;
 }
 
 async function loadAssets(): Promise<Assets> {
@@ -144,16 +281,32 @@ async function loadAssets(): Promise<Assets> {
     new Promise((res, rej) => {
       const img = new Image();
       img.onload = () => res(img);
-      img.onerror = rej;
+      img.onerror = () => rej(new Error(`failed to load ${src}`));
       img.src = src;
     });
-  const sheets = await Promise.all(
+  const charSheets = await Promise.all(
     Array.from({ length: CHAR_SHEET_COUNT }, (_, i) =>
       load(`/assets/pixel/characters/char_${i}.png`)
     )
   );
-  const floor = await load("/assets/pixel/floors/floor_0.png");
-  return { charSheets: sheets, floor };
+  const floorEntries: [FloorKind, HTMLImageElement | null][] = await Promise.all(
+    (Object.keys(FLOOR_PATHS) as FloorKind[]).map(async (k) => {
+      const p = FLOOR_PATHS[k];
+      if (!p) return [k, null] as [FloorKind, null];
+      return [k, await load(p)] as [FloorKind, HTMLImageElement];
+    })
+  );
+  const floors = Object.fromEntries(floorEntries) as Record<
+    FloorKind,
+    HTMLImageElement | null
+  >;
+  const furnEntries = await Promise.all(
+    Object.entries(FURN_PATH).map(
+      async ([k, p]) => [k, await load(p)] as [string, HTMLImageElement]
+    )
+  );
+  const furniture = Object.fromEntries(furnEntries);
+  return { charSheets, floors, furniture };
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -167,7 +320,6 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Preload assets once.
   useEffect(() => {
     let cancelled = false;
     loadAssets()
@@ -182,31 +334,47 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
     };
   }, []);
 
-  // Sync the entity list into the character map: spawn/update/remove.
   useEffect(() => {
     const chars = charsRef.current;
     const seen = new Set<string>();
 
-    // Index by kind to compute desk/station slots deterministically.
+    // Desk slots only get assigned to entities that actually need a desk
+    // (active or spared employees, active workers). Fired and pending
+    // entities have their own destination, so they don't take a slot
+    // and don't push the next desk-needing entity off the edge. Pending
+    // employees get their own running index across the court tiles so
+    // multiple pending people don't all stack on tile #0.
     const empIdx = new Map<string, number>();
     const wrkIdx = new Map<string, number>();
+    const courtIdx = new Map<string, number>();
     let e = 0;
     let w = 0;
+    let p = 0;
     for (const ent of entities) {
-      if (ent.kind === "employee") empIdx.set(ent.id, e++);
-      else wrkIdx.set(ent.id, w++);
+      if (ent.kind === "employee") {
+        if (ent.status === "fired") continue;
+        if (ent.status === "pending") {
+          courtIdx.set(ent.id, p++);
+          continue;
+        }
+        empIdx.set(ent.id, e++);
+      } else {
+        if (ent.status === "fired") continue;
+        wrkIdx.set(ent.id, w++);
+      }
     }
 
     for (const ent of entities) {
       seen.add(ent.id);
       const idx =
         ent.kind === "employee"
-          ? (empIdx.get(ent.id) ?? 0)
+          ? ent.status === "pending"
+            ? (courtIdx.get(ent.id) ?? 0)
+            : (empIdx.get(ent.id) ?? 0)
           : (wrkIdx.get(ent.id) ?? 0);
       const target = targetFor(ent, idx);
       const existing = chars.get(ent.id);
       if (!existing) {
-        // Spawn at exit door so they "walk in" to their station.
         chars.set(ent.id, {
           id: ent.id,
           name: ent.name,
@@ -220,24 +388,29 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
           frame: 0,
           frameTimer: 0,
           tint: tintFor(ent),
-          wantsType: wantsTypeFor(ent),
         });
       } else {
         existing.targetCol = target.col;
         existing.targetRow = target.row;
         existing.tint = tintFor(ent);
         existing.paletteIdx = ent.paletteIdx % CHAR_SHEET_COUNT;
-        existing.wantsType = wantsTypeFor(ent);
       }
     }
-
-    // Remove characters whose entity is gone.
     for (const id of [...chars.keys()]) {
       if (!seen.has(id)) chars.delete(id);
     }
   }, [entities]);
 
-  // Game loop.
+  const floorPlan = useMemo(() => {
+    const out: FloorKind[][] = [];
+    for (let r = 0; r < ROWS; r++) {
+      const row: FloorKind[] = [];
+      for (let c = 0; c < COLS; c++) row.push(floorAt(c, r));
+      out.push(row);
+    }
+    return out;
+  }, []);
+
   useEffect(() => {
     if (!ready) return;
     const canvas = canvasRef.current;
@@ -263,8 +436,6 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
         const isMoving = dist > 0.05;
 
         if (isMoving) {
-          // Snap-to-grid by stepping toward whichever axis is larger
-          // first, so motion looks deliberate without a real path.
           const move = WALK_SPEED_TILES_PER_SEC * dt;
           if (Math.abs(dx) > Math.abs(dy)) {
             ch.x += Math.sign(dx) * Math.min(Math.abs(dx), move);
@@ -280,10 +451,11 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
             ch.frame = (ch.frame + 1) % 4;
           }
         } else {
-          // At target. Use the entity-driven wantsType flag set at sync.
           ch.x = ch.targetCol;
           ch.y = ch.targetRow;
-          ch.anim = ch.wantsType && ch.tint !== "fired" ? "type" : "idle";
+          const wantType =
+            ch.tint === null && (ch.id.startsWith("w") || ch.id.startsWith("worker"));
+          ch.anim = wantType ? "type" : "idle";
           ch.frameTimer += dt;
           if (ch.anim === "type") {
             if (ch.frameTimer >= TYPE_FRAME_DURATION) {
@@ -298,12 +470,19 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
     };
 
     const draw = (c: CanvasRenderingContext2D) => {
-      // Floor.
-      const floor = assetsRef.current!.floor;
+      // 1. Void background.
+      c.fillStyle = VOID_BG;
+      c.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+      // 2. Floor tiles per cell.
+      const floors = assetsRef.current!.floors;
       for (let r = 0; r < ROWS; r++) {
         for (let col = 0; col < COLS; col++) {
+          const kind = floorPlan[r][col];
+          const img = floors[kind];
+          if (!img) continue;
           c.drawImage(
-            floor,
+            img,
             0,
             0,
             TILE,
@@ -316,8 +495,50 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
         }
       }
 
-      // Court rug.
-      c.fillStyle = "rgba(255,90,30,0.18)";
+      // 2b. Per-room multiply tint so a single grayscale tile atlas
+      //     yields warm wood, cool carpet, and pale kitchen.
+      c.save();
+      c.globalCompositeOperation = "multiply";
+      const room = (rect: { c0: number; r0: number; c1: number; r1: number }, color: string) => {
+        c.fillStyle = color;
+        c.fillRect(
+          rect.c0 * TILE * ZOOM,
+          rect.r0 * TILE * ZOOM,
+          (rect.c1 - rect.c0) * TILE * ZOOM,
+          (rect.r1 - rect.r0) * TILE * ZOOM
+        );
+      };
+      const wood = FLOOR_TINTS.wood;
+      const tile = FLOOR_TINTS.tile;
+      const carpet = FLOOR_TINTS.carpet;
+      if (wood) room(WORK_ROOM, wood);
+      if (tile) room(KITCHEN, tile);
+      if (carpet) room(MEETING, carpet);
+      c.restore();
+
+      // 3. Walls.
+      c.fillStyle = WALL_FILL_COLOR;
+      for (const w of WALL_FILLS) {
+        c.fillRect(
+          w.c * TILE * ZOOM,
+          w.r * TILE * ZOOM,
+          w.w * TILE * ZOOM,
+          w.h * TILE * ZOOM
+        );
+      }
+      c.fillStyle = "rgba(255, 220, 180, 0.06)";
+      for (const d of DOOR_HIGHLIGHTS) {
+        c.fillRect(
+          d.c * TILE * ZOOM,
+          d.r * TILE * ZOOM,
+          d.w * TILE * ZOOM,
+          d.h * TILE * ZOOM
+        );
+      }
+
+      // 4. Court rug — solid orange, drawn over the carpet so it
+      //    actually reads at a glance.
+      c.fillStyle = "rgba(255,120,60,0.55)";
       for (const t of COURT_TILES) {
         c.fillRect(
           t.col * TILE * ZOOM,
@@ -326,89 +547,118 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
           TILE * ZOOM
         );
       }
-      // Exit door.
-      c.fillStyle = "rgba(140,30,20,0.55)";
+
+      // 5. Exit door mat — deep red.
+      c.fillStyle = "rgba(180,40,30,0.85)";
       c.fillRect(
         EXIT_DOOR.col * TILE * ZOOM,
         EXIT_DOOR.row * TILE * ZOOM,
         TILE * ZOOM,
         TILE * ZOOM
       );
-
-      // Characters — Z-sort by Y for proper occlusion.
-      const ordered = [...charsRef.current.values()].sort(
-        (a, b) => a.y - b.y
+      // Door frame highlight.
+      c.strokeStyle = "rgba(255,180,120,0.6)";
+      c.lineWidth = 2;
+      c.strokeRect(
+        EXIT_DOOR.col * TILE * ZOOM,
+        EXIT_DOOR.row * TILE * ZOOM,
+        TILE * ZOOM,
+        TILE * ZOOM
       );
+
+      // 6. Furniture + characters merged, Z-sorted by anchor Y.
+      type Drawable = { y: number; render: () => void };
+      const drawables: Drawable[] = [];
+
+      const furn = assetsRef.current!.furniture;
+      for (const f of FURNITURE) {
+        const sz = FURN_SIZE[f.asset];
+        if (!sz) continue;
+        const img = furn[f.asset];
+        if (!img) continue;
+        const drawW = sz.pw * ZOOM;
+        const drawH = sz.ph * ZOOM;
+        const dx = f.col * TILE * ZOOM;
+        const dy = (f.row + sz.th) * TILE * ZOOM - drawH;
+        const anchorY = (f.anchorY ?? f.row + sz.th) - 0.01;
+        drawables.push({
+          y: anchorY,
+          render: () => {
+            c.drawImage(img, 0, 0, sz.pw, sz.ph, dx, dy, drawW, drawH);
+          },
+        });
+      }
+
       const sheets = assetsRef.current!.charSheets;
-
-      for (const ch of ordered) {
+      for (const ch of charsRef.current.values()) {
         const sheet = sheets[ch.paletteIdx];
-        const dirRow =
-          ch.dir === "down" ? 0 : ch.dir === "up" ? 1 : 2; // right/left both use row 2
-
-        // Frame index in 0..6: walk uses 0/1/2/1, type uses 3/4, idle 1.
+        const dirRow = ch.dir === "down" ? 0 : ch.dir === "up" ? 1 : 2;
         let frameCol: number;
         if (ch.anim === "walk") {
-          // 0,1,2,1 cycle from frame counter 0..3
           frameCol = ch.frame === 0 ? 0 : ch.frame === 2 ? 2 : 1;
         } else if (ch.anim === "type") {
           frameCol = 3 + (ch.frame % 2);
         } else {
           frameCol = 1;
         }
-
         const sx = frameCol * CHAR_FRAME_W;
         const sy = dirRow * CHAR_FRAME_H;
 
-        // World draw position; characters straddle a 16×32 box so we
-        // anchor by feet at the center of the tile.
         const worldX = ch.x * TILE * ZOOM + (TILE * ZOOM) / 2;
         const worldY = (ch.y + 1) * TILE * ZOOM;
-
         const drawW = CHAR_FRAME_W * ZOOM;
         const drawH = CHAR_FRAME_H * ZOOM;
         const dx = worldX - drawW / 2;
         const dy = worldY - drawH;
+        const anchorY = ch.y + 1;
+        const tint = ch.tint;
+        const dir = ch.dir;
+        const name = ch.name;
 
-        c.save();
-        if (ch.dir === "left") {
-          // Mirror horizontally around the character's center.
-          c.translate(dx + drawW, dy);
-          c.scale(-1, 1);
-          c.drawImage(sheet, sx, sy, CHAR_FRAME_W, CHAR_FRAME_H, 0, 0, drawW, drawH);
-        } else {
-          c.drawImage(sheet, sx, sy, CHAR_FRAME_W, CHAR_FRAME_H, dx, dy, drawW, drawH);
-        }
-        // Tint pass.
-        if (ch.tint === "fired") {
-          c.globalCompositeOperation = "source-atop";
-          c.fillStyle = "rgba(40,40,40,0.55)";
-          if (ch.dir === "left") c.fillRect(0, 0, drawW, drawH);
-          else c.fillRect(dx, dy, drawW, drawH);
-        } else if (ch.tint === "court") {
-          c.globalCompositeOperation = "source-atop";
-          c.fillStyle = "rgba(255,90,30,0.35)";
-          if (ch.dir === "left") c.fillRect(0, 0, drawW, drawH);
-          else c.fillRect(dx, dy, drawW, drawH);
-        }
-        c.restore();
+        drawables.push({
+          y: anchorY,
+          render: () => {
+            c.save();
+            if (dir === "left") {
+              c.translate(dx + drawW, dy);
+              c.scale(-1, 1);
+              c.drawImage(sheet, sx, sy, CHAR_FRAME_W, CHAR_FRAME_H, 0, 0, drawW, drawH);
+            } else {
+              c.drawImage(sheet, sx, sy, CHAR_FRAME_W, CHAR_FRAME_H, dx, dy, drawW, drawH);
+            }
+            if (tint === "fired") {
+              c.globalCompositeOperation = "source-atop";
+              c.fillStyle = "rgba(40,40,40,0.55)";
+              if (dir === "left") c.fillRect(0, 0, drawW, drawH);
+              else c.fillRect(dx, dy, drawW, drawH);
+            } else if (tint === "court") {
+              c.globalCompositeOperation = "source-atop";
+              c.fillStyle = "rgba(255,90,30,0.35)";
+              if (dir === "left") c.fillRect(0, 0, drawW, drawH);
+              else c.fillRect(dx, dy, drawW, drawH);
+            }
+            c.restore();
 
-        // Name label.
-        c.fillStyle = "rgba(0,0,0,0.55)";
-        c.fillRect(dx + 2, dy - 14, drawW - 4, 12);
-        c.fillStyle = "#f4f4f7";
-        c.font = "10px monospace";
-        c.textBaseline = "top";
-        c.textAlign = "center";
-        c.fillText(ch.name, worldX, dy - 12);
+            c.fillStyle = "rgba(0,0,0,0.7)";
+            c.fillRect(dx + 2, dy - 14, drawW - 4, 12);
+            c.fillStyle = "#f4f4f7";
+            c.font = "10px monospace";
+            c.textBaseline = "top";
+            c.textAlign = "center";
+            c.fillText(name, worldX, dy - 12);
+          },
+        });
       }
+
+      drawables.sort((a, b) => a.y - b.y);
+      for (const d of drawables) d.render();
     };
 
     rafRef.current = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [ready]);
+  }, [ready, floorPlan]);
 
   if (error) {
     return (
@@ -419,7 +669,7 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
   }
 
   return (
-    <div className="border border-[var(--border)] bg-[#1a1414] p-3 inline-block">
+    <div className="border border-[var(--border)] bg-[#0a0a0c] p-3 inline-block">
       <canvas
         ref={canvasRef}
         width={CANVAS_W}
