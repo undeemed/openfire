@@ -669,20 +669,85 @@ export function PixelOffice({ entities }: { entities: OfficeEntity[] }) {
   }
 
   return (
-    <div className="border border-[var(--border)] bg-[#0a0a0c] p-3 inline-block">
+    <PixelOfficeFrame canvasRef={canvasRef} ready={ready} />
+  );
+}
+
+/**
+ * Frame wrapper that owns the fullscreen toggle. The canvas renders at
+ * a fixed CANVAS_W × CANVAS_H bitmap (preserves pixel-perfect art); CSS
+ * scales it up when the user enters fullscreen, with `aspect-ratio`
+ * locked to the canvas dims so the office never stretches.
+ */
+function PixelOfficeFrame({
+  canvasRef,
+  ready,
+}: {
+  canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  ready: boolean;
+}) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onChange = () => {
+      setFullscreen(document.fullscreenElement === wrapRef.current);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const toggle = async () => {
+    const el = wrapRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement === el) {
+        await document.exitFullscreen();
+      } else {
+        await el.requestFullscreen();
+      }
+    } catch {
+      // Fullscreen API not available or blocked — silently no-op.
+    }
+  };
+
+  // In fullscreen, scale canvas via CSS so it fills the viewport while
+  // keeping the 30:18 aspect.
+  const canvasStyle: React.CSSProperties = fullscreen
+    ? {
+        width: "min(100vw, calc(100vh * 30 / 18))",
+        height: "min(100vh, calc(100vw * 18 / 30))",
+        imageRendering: "pixelated",
+        display: "block",
+      }
+    : {
+        width: CANVAS_W,
+        height: CANVAS_H,
+        imageRendering: "pixelated",
+        display: "block",
+      };
+
+  const wrapClass = fullscreen
+    ? "bg-[#0a0a0c] w-screen h-screen flex items-center justify-center relative"
+    : "border border-[var(--border)] bg-[#0a0a0c] p-3 inline-block relative";
+
+  return (
+    <div ref={wrapRef} className={wrapClass}>
       <canvas
         ref={canvasRef}
         width={CANVAS_W}
         height={CANVAS_H}
-        style={{
-          width: CANVAS_W,
-          height: CANVAS_H,
-          imageRendering: "pixelated",
-          display: "block",
-        }}
+        style={canvasStyle}
         aria-label="Pixel office: live OpenFire agent state"
       />
-      {!ready ? (
+      <button
+        type="button"
+        onClick={toggle}
+        className="absolute top-2 right-2 z-10 px-2.5 py-1 text-[10px] font-mono tracking-[0.18em] uppercase border border-[var(--border-raised)] bg-[var(--surface)]/85 text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--accent)] hover:bg-[var(--surface-raised)] transition-colors"
+      >
+        {fullscreen ? "Exit Fullscreen [Esc]" : "Fullscreen ⛶"}
+      </button>
+      {!ready && !fullscreen ? (
         <div className="text-[10px] font-mono text-[var(--text-dim)] mt-2 tracking-[0.2em] uppercase">
           Loading sprites…
         </div>
