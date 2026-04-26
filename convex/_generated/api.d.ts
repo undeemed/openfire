@@ -22,6 +22,10 @@ import type * as messages from "../messages.js";
 import type * as seed from "../seed.js";
 import type * as threads from "../threads.js";
 import type * as toolCalls from "../toolCalls.js";
+import type * as workerRunner from "../workerRunner.js";
+import type * as workerTasks from "../workerTasks.js";
+import type * as workerTemplates from "../workerTemplates.js";
+import type * as workers from "../workers.js";
 
 import type {
   ApiFromModules,
@@ -44,6 +48,10 @@ declare const fullApi: ApiFromModules<{
   seed: typeof seed;
   threads: typeof threads;
   toolCalls: typeof toolCalls;
+  workerRunner: typeof workerRunner;
+  workerTasks: typeof workerTasks;
+  workerTemplates: typeof workerTemplates;
+  workers: typeof workers;
 }>;
 
 /**

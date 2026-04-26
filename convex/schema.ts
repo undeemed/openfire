@@ -80,6 +80,85 @@ export default defineSchema({
     .index("by_decision", ["decision_id"])
     .index("by_message_id", ["agentmail_message_id"]),
 
+  worker_templates: defineTable({
+    type: v.union(
+      v.literal("engineer"),
+      v.literal("gtm"),
+      v.literal("recruiter"),
+      v.literal("cse"),
+      v.literal("pm"),
+      v.literal("researcher")
+    ),
+    display_name: v.string(),
+    description: v.string(),
+    default_corpora: v.array(v.string()),
+    system_prompt: v.string(),
+    // Tighter than v.any(): require at minimum the Anthropic tool-use top-level
+    // shape. input_schema stays free-form because it varies wildly per tool.
+    tools: v.array(
+      v.object({
+        name: v.string(),
+        description: v.string(),
+        input_schema: v.any(),
+      })
+    ),
+    created_at: v.optional(v.number()),
+    updated_at: v.optional(v.number()),
+  }).index("by_type", ["type"]),
+
+  worker_instances: defineTable({
+    template_type: v.union(
+      v.literal("engineer"),
+      v.literal("gtm"),
+      v.literal("recruiter"),
+      v.literal("cse"),
+      v.literal("pm"),
+      v.literal("researcher")
+    ),
+    name: v.string(),
+    agentmail_inbox_id: v.optional(v.string()),
+    status: v.union(v.literal("active"), v.literal("fired")),
+    hired_at: v.number(),
+    fired_at: v.optional(v.number()),
+  })
+    .index("by_status", ["status"])
+    .index("by_template_type", ["template_type"]),
+
+  worker_tasks: defineTable({
+    worker_id: v.id("worker_instances"),
+    brief: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("in_progress"),
+      v.literal("waiting_input"),
+      v.literal("done"),
+      v.literal("failed"),
+      v.literal("refused")
+    ),
+    result_summary: v.optional(v.string()),
+    deliverable_url: v.optional(v.string()),
+    agentmail_thread_id: v.optional(v.string()),
+    error: v.optional(v.string()),
+    created_at: v.number(),
+    finished_at: v.optional(v.number()),
+  })
+    .index("by_worker", ["worker_id"])
+    .index("by_status", ["status"]),
+
+  worker_task_steps: defineTable({
+    task_id: v.id("worker_tasks"),
+    turn: v.number(),
+    kind: v.union(
+      v.literal("reasoning"),
+      v.literal("tool_call"),
+      v.literal("tool_result"),
+      v.literal("final")
+    ),
+    content: v.string(),
+    tool_name: v.optional(v.string()),
+    created_at: v.number(),
+  }).index("by_task", ["task_id"]),
+
   digital_employees: defineTable({
     name: v.string(),
     role: v.string(),
