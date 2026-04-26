@@ -47,6 +47,50 @@ describe("unifiedSearch (demo mode)", () => {
       expect(typeof c.freshness).toBe("number");
     }
   });
+
+  test("source_types filter retains only matching types", async () => {
+    const r = await unifiedSearch(["ns"], "x", ["github"]);
+    expect(r.citations.length).toBeGreaterThan(0);
+    for (const c of r.citations) {
+      expect(c.label.toLowerCase().startsWith("github:")).toBe(true);
+    }
+  });
+
+  test("source_types filter accepts multiple types", async () => {
+    const r = await unifiedSearch(["ns"], "x", ["github", "slack"]);
+    expect(r.citations.length).toBeGreaterThan(0);
+    for (const c of r.citations) {
+      const label = c.label.toLowerCase();
+      expect(
+        label.startsWith("github:") || label.startsWith("slack:"),
+      ).toBe(true);
+    }
+    expect(r.citations.some((c) => c.label.toLowerCase().startsWith("github:"))).toBe(true);
+    expect(r.citations.some((c) => c.label.toLowerCase().startsWith("slack:"))).toBe(true);
+  });
+
+  test("source_types is case-insensitive", async () => {
+    const upper = await unifiedSearch(["ns"], "x", ["GITHUB"]);
+    const lower = await unifiedSearch(["ns"], "x", ["github"]);
+    expect(upper.citations.map((c) => c.source_id)).toEqual(
+      lower.citations.map((c) => c.source_id),
+    );
+    // Mixed casing also works (catches label-format mismatch where filter
+    // would only see lowercase labels even if Nia returns capitalized types).
+    const mixed = await unifiedSearch(["ns"], "x", ["GitHub"]);
+    expect(mixed.citations.length).toBe(lower.citations.length);
+  });
+
+  test("empty source_types passes all citations through", async () => {
+    const noFilter = await unifiedSearch(["ns"], "x");
+    const empty = await unifiedSearch(["ns"], "x", []);
+    expect(empty.citations).toEqual(noFilter.citations);
+  });
+
+  test("source_types with no matches returns empty citations", async () => {
+    const r = await unifiedSearch(["ns"], "x", ["nonexistent_type"]);
+    expect(r.citations).toEqual([]);
+  });
 });
 
 describe("getEntityContext (demo mode)", () => {

@@ -83,19 +83,34 @@ export function newMessageId() {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+export interface WorkerTaskBundle {
+  data_query: {
+    namespaces: string[];
+    source_types?: string[];
+  };
+  output_schema: {
+    required_fields: string[];
+  };
+}
+
 export interface SendMessageInput {
   text: string;
   contextId?: string;
   taskId?: string;
+  workerTask?: WorkerTaskBundle;
 }
 
 export async function sendMessage(
   endpointUrl: string,
   input: SendMessageInput
 ): Promise<A2ATask | null> {
+  const parts: A2AMessagePart[] = [{ kind: "text", text: input.text }];
+  if (input.workerTask) {
+    parts.push({ kind: "data", data: input.workerTask });
+  }
   const message: A2AMessage = {
     role: "user",
-    parts: [{ kind: "text", text: input.text }],
+    parts,
     messageId: newMessageId(),
     taskId: input.taskId,
     contextId: input.contextId,

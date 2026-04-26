@@ -6,7 +6,7 @@
 import { NextResponse } from "next/server";
 import { getConvex } from "@/lib/convex-server";
 import { api } from "@/convex/_generated/api";
-import { messageText } from "@/lib/a2a";
+import { messageText, type WorkerTaskBundle } from "@/lib/a2a";
 
 export const runtime = "nodejs";
 
@@ -35,7 +35,7 @@ export async function POST(
   if (method === "message/send") {
     const params = (body.params ?? {}) as {
       message?: {
-        parts?: Array<{ kind?: string; text?: string }>;
+        parts?: Array<{ kind?: string; text?: string; data?: unknown }>;
         messageId?: string;
         contextId?: string;
       };
@@ -58,6 +58,10 @@ export async function POST(
       message.messageId ??
       `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+    // Extract WorkerTaskBundle from data parts if present.
+    const workerTask = (message.parts ?? []).find((p) => p.kind === "data")
+      ?.data as WorkerTaskBundle | undefined;
+
     try {
       const task = await convex.action(api.a2aHandler.handleInbound, {
         agent_entity_id: agent_id,
@@ -65,6 +69,10 @@ export async function POST(
         text,
         context_id,
         message_id,
+        ...(workerTask && {
+          source_types: workerTask.data_query?.source_types,
+          namespaces: workerTask.data_query?.namespaces,
+        }),
       });
       return NextResponse.json({ jsonrpc: "2.0", id, result: task });
     } catch (e: unknown) {
