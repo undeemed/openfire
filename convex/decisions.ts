@@ -75,7 +75,8 @@ export const hasOpenDecision = query({
       (d) =>
         d.status === "pending" ||
         d.status === "approved" ||
-        d.status === "sent"
+        d.status === "sent" ||
+        d.status === "escalated"
     );
   },
 });
@@ -108,6 +109,43 @@ export const create = mutation({
   },
 });
 
+/**
+ * Insert a decision in the "escalated" state. Used when the agent loop
+ * calls escalate_to_human instead of propose_decision. Employee status
+ * flips to "pending" so the row appears in the manager's review queue
+ * with the escalation reason rather than a fire/spare verdict.
+ */
+export const createEscalated = mutation({
+  args: {
+    employee_id: v.id("employees"),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("decisions")
+      .withIndex("by_employee", (q) => q.eq("employee_id", args.employee_id))
+      .collect();
+    const open = existing.find(
+      (d) => d.status === "pending" || d.status === "escalated",
+    );
+    if (open) return open._id;
+
+    const id = await ctx.db.insert("decisions", {
+      employee_id: args.employee_id,
+      reasoning: args.reason,
+      decision: "spare",
+      email_draft: "",
+      status: "escalated",
+      escalated_reason: args.reason,
+      created_at: Date.now(),
+    });
+
+    await ctx.db.patch(args.employee_id, { status: "pending" });
+
+    return id;
+  },
+});
+
 export const setStatus = mutation({
   args: {
     id: v.id("decisions"),
@@ -115,11 +153,49 @@ export const setStatus = mutation({
       v.literal("pending"),
       v.literal("approved"),
       v.literal("rejected"),
-      v.literal("sent")
+      v.literal("sent"),
+      v.literal("escalated")
     ),
   },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.id, { status: args.status });
+  },
+});
+
+export const escalate = mutation({
+  args: {
+    id: v.id("decisions"),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const d = await ctx.db.get(args.id);
+    if (!d) throw new Error("Decision not found");
+    if (d.status !== "pending") return { ok: false, reason: "not pending" };
+    await ctx.db.patch(args.id, {
+      status: "escalated",
+      escalated_reason: args.reason,
+    });
+    return { ok: true };
+  },
+});
+
+export const setIterations = mutation({
+  args: {
+    id: v.id("decisions"),
+    iterations: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, { iterations: args.iterations });
+  },
+});
+
+export const setExitInterviewEvent = mutation({
+  args: {
+    id: v.id("decisions"),
+    event_id: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, { exit_interview_event_id: args.event_id });
   },
 });
 
@@ -164,10 +240,20 @@ export const markSent = mutation({
   handler: async (ctx, args) => {
     const d = await ctx.db.get(args.id);
     if (!d) throw new Error("Decision not found");
+    // Only flip to "sent" from a state where sending is meaningful.
+    // Calling markSent on rejected/escalated/already-sent must not
+    // resurrect an employee or re-send an email.
+    if (d.status === "sent") return { ok: true, alreadySent: true };
+    if (d.status !== "pending" && d.status !== "approved") {
+      throw new Error(
+        `markSent: cannot transition from ${d.status} to sent`,
+      );
+    }
     await ctx.db.patch(args.id, {
       status: "sent",
       ...(args.thread_id ? { agentmail_thread_id: args.thread_id } : {}),
     });
     await ctx.db.patch(d.employee_id, { status: "fired" });
+    return { ok: true, alreadySent: false };
   },
 });
