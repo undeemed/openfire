@@ -114,12 +114,94 @@ export async function evaluateEmployee(
   const client = getClient();
   const traces: ToolCallTrace[] = [];
 
+  // Plan-Execute: pre-fetch both data-gathering tools in parallel before
+  // starting the Claude loop. Claude always calls these first anyway;
+  // running them upfront eliminates 1-2 API round-trips and lets Claude
+  // skip straight to deciding. If pre-fetch fails for any reason, fall
+  // back to the freeform tool loop so a transient Nia/Convex error never
+  // aborts the whole evaluation.
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
       content: buildEvaluationUserMessage(employee, criteria),
     },
   ];
+
+  try {
+    const preStart = Date.now();
+    const rand = () => Math.random().toString(36).slice(2, 8);
+    const preNozomioId = `pre_nia_${Date.now()}_${rand()}`;
+    const preHistoryId = `pre_hist_${Date.now()}_${rand()}`;
+    const [preCtx, preHistory] = await Promise.all([
+      deps.getNozomioContext(),
+      deps.searchEmployeeHistory(employee.name),
+    ]);
+    const preDuration = Date.now() - preStart;
+
+    traces.push(
+      {
+        iteration: 0,
+        tool_name: "fetch_nozomio_context",
+        input_json: "{}",
+        output_json: JSON.stringify(preCtx),
+        is_error: false,
+        duration_ms: preDuration,
+      },
+      {
+        iteration: 0,
+        tool_name: "search_employee_history",
+        input_json: JSON.stringify({ query: employee.name }),
+        output_json: JSON.stringify({ query: employee.name, ...preHistory }),
+        is_error: false,
+        duration_ms: preDuration,
+      },
+    );
+
+    // Synthetic conversation: pre-populate tool results so Claude starts
+    // with evidence in context and calls propose_decision/escalate immediately.
+    messages.push(
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use" as const,
+            id: preNozomioId,
+            name: "fetch_nozomio_context",
+            input: {},
+          },
+          {
+            type: "tool_use" as const,
+            id: preHistoryId,
+            name: "search_employee_history",
+            input: { query: employee.name },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result" as const,
+            tool_use_id: preNozomioId,
+            content: JSON.stringify(preCtx),
+            is_error: false,
+          },
+          {
+            type: "tool_result" as const,
+            tool_use_id: preHistoryId,
+            content: JSON.stringify({ query: employee.name, ...preHistory }),
+            is_error: false,
+          },
+        ],
+      },
+    );
+  } catch (err) {
+    console.warn(
+      "[evaluateEmployee] pre-fetch failed, falling back to freeform tool loop:",
+      err,
+    );
+    // messages stays as just the user turn — Claude will call tools normally.
+  }
 
   // Mark the last tool schema with cache_control so the (static) tools
   // block hits the prompt cache on subsequent iterations + subsequent
@@ -673,24 +755,66 @@ ${citations || "(none)"}`,
 // Orchestrator: decompose + aggregate
 // ---------------------------------------------------------------------------
 
+// Structured task passed from orchestrator to worker (RUBICON/AQL-inspired).
+// Declaring data requirements and output schema upfront lets workers skip
+// source discovery and lets the aggregator use typed results.
+export interface WorkerTask {
+  instruction: string;
+  data_query: {
+    namespaces: string[];
+    source_types?: string[];
+  };
+  output_schema: {
+    required_fields: string[];
+  };
+}
+
 export interface OrchestratorSubtask {
   agent_name: string;
-  instruction: string;
+  task: WorkerTask;
   required_skills: string[];
 }
 
+export type OrchestratorTopology = "parallel" | "pipeline" | "single";
+
 export interface OrchestratorPlan {
+  topology: OrchestratorTopology;
   subtasks: OrchestratorSubtask[];
   rationale: string;
 }
 
-const SYSTEM_PROMPT_ORCH_PLAN = `You are the OpenFire orchestrator agent (the "admin bot" in the Discord-style topology). You receive a manager request and decompose it into 1-3 fresh, scoped subtasks for worker digital employees. Workers are stateless and only see the scoped instruction you give them — never the full thread.
+const SYSTEM_PROMPT_ORCH_PLAN = `You are the OpenFire orchestrator agent. Decompose the manager request into 1-3 scoped subtasks for worker digital employees. Workers receive only their scoped task — never the raw thread.
 
-You will be given:
-- The manager's request.
-- A directory of available digital employees (name, role, skills).
+Choose topology:
+- "single": you can answer directly without dispatching (trivial lookups).
+- "parallel": subtasks are independent (most common).
+- "pipeline": later workers need earlier workers' output (sequential analysis, compare/contrast).
 
-Output STRICT JSON: { "rationale": string, "subtasks": [ { "agent_name": string, "instruction": string, "required_skills": string[] } ] }. The agent_name must match an entry in the directory exactly. The instruction must contain everything the worker needs to answer (so they can execute with no other context). Cap subtasks at 3.`;
+Output STRICT JSON:
+{
+  "rationale": string,
+  "topology": "parallel" | "pipeline" | "single",
+  "subtasks": [
+    {
+      "agent_name": string,
+      "task": {
+        "instruction": string,
+        "data_query": { "namespaces": [string], "source_types": [string] },
+        "output_schema": { "required_fields": [string] }
+      },
+      "required_skills": [string]
+    }
+  ]
+}
+
+Rules:
+- agent_name must exactly match a directory entry.
+- instruction must be self-contained (worker has no other context).
+- data_query.namespaces: Nozomio namespaces to search (use thread_id + agent entity_id).
+- data_query.source_types: restrict to relevant source types (e.g. ["github","jira"]) or omit for all.
+- output_schema.required_fields: what the worker must return.
+- For "single" topology, subtasks may be empty.
+- Cap subtasks at 3. No fences.`;
 
 export async function orchestratorPlan(
   managerRequest: string,
@@ -734,22 +858,41 @@ Decompose now. JSON only.`,
   const cleaned = stripCodeFences(extractText(response));
   try {
     const obj = JSON.parse(cleaned) as Partial<OrchestratorPlan>;
-    if (Array.isArray(obj.subtasks) && typeof obj.rationale === "string") {
-      const subtasks = obj.subtasks
+    if (typeof obj.rationale === "string") {
+      const topology: OrchestratorTopology =
+        obj.topology === "pipeline" || obj.topology === "single"
+          ? obj.topology
+          : "parallel";
+      const subtasks = (Array.isArray(obj.subtasks) ? obj.subtasks : [])
         .filter(
           (s): s is OrchestratorSubtask =>
             typeof s.agent_name === "string" &&
-            typeof s.instruction === "string"
+            typeof s.task?.instruction === "string"
         )
         .slice(0, 3)
         .map((s) => ({
           agent_name: s.agent_name,
-          instruction: s.instruction,
+          task: {
+            instruction: s.task.instruction,
+            data_query: {
+              namespaces: Array.isArray(s.task.data_query?.namespaces)
+                ? s.task.data_query.namespaces.filter((x): x is string => typeof x === "string")
+                : [],
+              source_types: Array.isArray(s.task.data_query?.source_types)
+                ? s.task.data_query.source_types.filter((x): x is string => typeof x === "string")
+                : undefined,
+            },
+            output_schema: {
+              required_fields: Array.isArray(s.task.output_schema?.required_fields)
+                ? s.task.output_schema.required_fields.filter((x): x is string => typeof x === "string")
+                : [],
+            },
+          },
           required_skills: Array.isArray(s.required_skills)
             ? s.required_skills.filter((x): x is string => typeof x === "string")
             : [],
         }));
-      if (subtasks.length) return { rationale: obj.rationale, subtasks };
+      return { rationale: obj.rationale, topology, subtasks };
     }
   } catch {
     // fall through
@@ -764,17 +907,23 @@ function demoPlan(
   const target = directory[0];
   if (!target) {
     return {
+      topology: "single",
       rationale:
         "No digital employees available; replying directly without dispatch.",
       subtasks: [],
     };
   }
   return {
+    topology: "parallel",
     rationale: `Routing the request to ${target.name} (${target.role}) since they own the most relevant skills.`,
     subtasks: [
       {
         agent_name: target.name,
-        instruction: `Manager asked: "${managerRequest}". Use Nia unified search over your namespace, draft an answer with cited sources, and reply.`,
+        task: {
+          instruction: `Manager asked: "${managerRequest}". Use Nia unified search over your namespace, draft an answer with cited sources, and reply.`,
+          data_query: { namespaces: [] },
+          output_schema: { required_fields: ["answer", "sources"] },
+        },
         required_skills: target.skills,
       },
     ],

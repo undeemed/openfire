@@ -300,10 +300,11 @@ export interface UnifiedSearchResult {
 
 export async function unifiedSearch(
   namespaces: string[],
-  query: string
+  query: string,
+  source_types?: string[]
 ): Promise<UnifiedSearchResult> {
   if (!process.env.NIA_API_KEY && !process.env.NOZOMIO_API_KEY) {
-    return demoSearch(namespaces, query);
+    return demoSearch(namespaces, query, source_types);
   }
 
   try {
@@ -321,60 +322,84 @@ export async function unifiedSearch(
         messages: [{ role: "user", content: query }],
       }),
     });
-    if (!res.ok) return demoSearch(namespaces, query);
+    if (!res.ok) return demoSearch(namespaces, query, source_types);
     const data = (await res.json()) as Record<string, unknown>;
     const sources = extractSources(data);
-    return {
-      query,
-      namespaces,
-      citations: sources.slice(0, 5).map((s, i) => ({
-        source_id:
-          (s.signals?.source_id as string | undefined) ?? `nia_${i}`,
-        label: `${s.type}: ${s.name}`,
-        snippet: s.summary,
-        freshness: Date.now(),
-      })),
-      raw: data,
-    };
+    // Filter on raw s.type (case-insensitive) before formatting the label,
+    // so casing/separator quirks in the label can't break the filter.
+    const filteredSources = filterSourcesByType(sources, source_types);
+    const citations = filteredSources.slice(0, 5).map((s, i) => ({
+      source_id:
+        (s.signals?.source_id as string | undefined) ?? `nia_${i}`,
+      label: `${s.type}: ${s.name}`,
+      snippet: s.summary,
+      freshness: Date.now(),
+    }));
+    return { query, namespaces, citations, raw: data };
   } catch (err) {
     console.warn("[nozomio] unifiedSearch error:", err);
-    return demoSearch(namespaces, query);
+    return demoSearch(namespaces, query, source_types);
   }
+}
+
+function filterSourcesByType<T extends { type: string }>(
+  sources: T[],
+  source_types?: string[]
+): T[] {
+  if (!source_types || source_types.length === 0) return sources;
+  const normalized = new Set(source_types.map((t) => t.toLowerCase()));
+  return sources.filter((s) => normalized.has(s.type.toLowerCase()));
+}
+
+function filterBySourceTypes(
+  citations: UnifiedSearchResult["citations"],
+  source_types?: string[]
+): UnifiedSearchResult["citations"] {
+  if (!source_types || source_types.length === 0) return citations;
+  const normalized = source_types.map((t) => t.toLowerCase());
+  return citations.filter((c) => {
+    const colonIdx = c.label.indexOf(":");
+    if (colonIdx === -1) return false;
+    const type = c.label.slice(0, colonIdx).trim().toLowerCase();
+    return normalized.includes(type);
+  });
 }
 
 function demoSearch(
   namespaces: string[],
-  query: string
+  query: string,
+  source_types?: string[]
 ): UnifiedSearchResult {
   const seed = (namespaces.join("") + query)
     .split("")
     .reduce((a, c) => a + c.charCodeAt(0), 0);
+  const allCitations = [
+    {
+      source_id: `nia_demo_${seed}_a`,
+      label: "github: handoff-notes.md",
+      snippet:
+        "Payroll migration: schema diff in PR #412; outstanding owner: <fired employee>; Slack thread #infra captures cutover plan.",
+      freshness: Date.now(),
+    },
+    {
+      source_id: `nia_demo_${seed}_b`,
+      label: "slack: #infra (recent)",
+      snippet:
+        "Sev-2 retrospective referenced the same migration; action item assigned but unresolved at termination.",
+      freshness: Date.now(),
+    },
+    {
+      source_id: `nia_demo_${seed}_c`,
+      label: "docs: launch-checklist.md",
+      snippet:
+        "Checklist item 7 (rotate payroll secrets) marked unchecked; cited in last status update.",
+      freshness: Date.now(),
+    },
+  ];
   return {
     query,
     namespaces,
-    citations: [
-      {
-        source_id: `nia_demo_${seed}_a`,
-        label: "github: handoff-notes.md",
-        snippet:
-          "Payroll migration: schema diff in PR #412; outstanding owner: <fired employee>; Slack thread #infra captures cutover plan.",
-        freshness: Date.now(),
-      },
-      {
-        source_id: `nia_demo_${seed}_b`,
-        label: "slack: #infra (recent)",
-        snippet:
-          "Sev-2 retrospective referenced the same migration; action item assigned but unresolved at termination.",
-        freshness: Date.now(),
-      },
-      {
-        source_id: `nia_demo_${seed}_c`,
-        label: "docs: launch-checklist.md",
-        snippet:
-          "Checklist item 7 (rotate payroll secrets) marked unchecked; cited in last status update.",
-        freshness: Date.now(),
-      },
-    ],
+    citations: filterBySourceTypes(allCitations, source_types),
   };
 }
 
