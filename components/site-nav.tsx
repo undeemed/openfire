@@ -8,6 +8,8 @@ import { Flame } from "lucide-react";
 const links = [
   { href: "/", label: "Pending Departures" },
   { href: "/pyre", label: "The Pyre 🔥" },
+  { href: "/digital-employees", label: "Digital Employees" },
+  { href: "/channels", label: "Channels" },
   { href: "/criteria", label: "Criteria" },
 ];
 
