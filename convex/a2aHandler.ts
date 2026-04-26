@@ -6,9 +6,9 @@
  * inbox, not two transports.
  */
 
-import { action } from "./_generated/server";
+import { action, internalAction } from "./_generated/server";
 import { v } from "convex/values";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { A2ATask, A2AMessagePart } from "../lib/a2a";
 
 const MANAGER_DEFAULT = () =>
@@ -23,10 +23,14 @@ export const handleInbound = action({
     text: v.string(),
     context_id: v.string(),
     message_id: v.string(),
+    // WorkerTaskBundle fields — when present, narrow the Nia search to
+    // avoid redundant round-trips for sources the task doesn't need.
+    source_types: v.optional(v.array(v.string())),
+    namespaces: v.optional(v.array(v.string())),
   },
   handler: async (
     ctx,
-    { agent_entity_id, sender_address, text, context_id, message_id }
+    { agent_entity_id, sender_address, text, context_id, message_id, source_types, namespaces }
   ): Promise<A2ATask> => {
     const agents = await ctx.runQuery(api.digitalEmployees.list, {});
     const agent = agents.find(
@@ -74,12 +78,15 @@ export const handleInbound = action({
       external_id: message_id,
     });
 
-    // Nia retrieval over (thread namespace ∪ agent namespace).
+    // Nia retrieval. When the orchestrator provided explicit namespaces or
+    // source_types via WorkerTaskBundle, use them to skip irrelevant sources
+    // and avoid redundant round-trips (RUBICON/AQL data-query pattern).
     const { unifiedSearch } = await import("../lib/nozomio");
-    const search = await unifiedSearch(
-      [context_id, agent.nozomio_entity_id],
-      text
-    );
+    const searchNamespaces =
+      namespaces && namespaces.length > 0
+        ? namespaces
+        : [context_id, agent.nozomio_entity_id];
+    const search = await unifiedSearch(searchNamespaces, text, source_types);
 
     // Compose reply via Claude.
     const { generateAgentReply } = await import("../lib/claude");
@@ -132,23 +139,45 @@ export const handleInbound = action({
       external_id: replyMessageId,
     });
 
-    // Shadow CC manager via AgentMail (single audit trail).
+    // Shadow CC manager via AgentMail (single audit trail). Scheduled
+    // rather than awaited so the A2ATask returns immediately, but Convex
+    // owns the lifetime — unawaited promises in actions get killed when
+    // the lambda returns, so fire-and-forget would silently lose emails.
+    await ctx.scheduler.runAfter(0, internal.a2aHandler.sendManagerCc, {
+      to: managerAddress,
+      from: agent.agentmail_address,
+      subject: `[A2A audit] ${reply.subject}`,
+      body:
+        `(A2A audit copy — agent ${agent.name} replied to ${sender_address})\n\n` +
+        reply.reply,
+      thread_id: context_id,
+    });
+
+    return completedTask(message_id, context_id, reply.reply, agent.name);
+  },
+});
+
+export const sendManagerCc = internalAction({
+  args: {
+    to: v.string(),
+    from: v.string(),
+    subject: v.string(),
+    body: v.string(),
+    thread_id: v.string(),
+  },
+  handler: async (_ctx, args) => {
     try {
       const { sendEmail } = await import("../lib/agentmail");
       await sendEmail({
-        to: managerAddress,
-        from: agent.agentmail_address,
-        subject: `[A2A audit] ${reply.subject}`,
-        body:
-          `(A2A audit copy — agent ${agent.name} replied to ${sender_address})\n\n` +
-          reply.reply,
-        thread_id: context_id,
+        to: args.to,
+        from: args.from,
+        subject: args.subject,
+        body: args.body,
+        thread_id: args.thread_id,
       });
     } catch (err) {
-      console.warn("[a2aHandler] manager CC failed:", err);
+      console.warn("[a2aHandler.sendManagerCc] failed:", err);
     }
-
-    return completedTask(message_id, context_id, reply.reply, agent.name);
   },
 });
 
