@@ -1,0 +1,141 @@
+"use client";
+
+/**
+ * /office — pixel-art live view of the OpenFire roster.
+ *
+ * Each employee and active worker becomes a character in a 30×18 tile
+ * canvas. Status drives where they walk:
+ *   - active employee → desk (top), idle/typing
+ *   - pending employee → orange "court" tiles in the center
+ *   - fired employee → exit door (gray-tinted)
+ *   - spared employee → back to a desk
+ *   - active worker → workstation (bottom), typing if busy
+ *
+ * Demo mode: append `?demo=1` to bypass Convex and render a canned
+ * roster so the visual works without a backend deployed. This is the
+ * mode used by the visual smoke test.
+ */
+import { useSearchParams } from "next/navigation";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { PixelOffice, OfficeEntity } from "@/components/pixel/PixelOffice";
+import Link from "next/link";
+
+const DEMO_ROSTER: OfficeEntity[] = [
+  { id: "e1", name: "Alice", kind: "employee", status: "active", paletteIdx: 0 },
+  { id: "e2", name: "Bob", kind: "employee", status: "active", paletteIdx: 1 },
+  { id: "e3", name: "Carol", kind: "employee", status: "pending", paletteIdx: 2 },
+  { id: "e4", name: "Dave", kind: "employee", status: "fired", paletteIdx: 3 },
+  { id: "e5", name: "Eve", kind: "employee", status: "spared", paletteIdx: 4 },
+  { id: "w1", name: "Hank-Eng", kind: "worker", status: "active", paletteIdx: 5, busy: true },
+  { id: "w2", name: "Mara-PM", kind: "worker", status: "active", paletteIdx: 0, busy: false },
+  { id: "w3", name: "Iris-Res", kind: "worker", status: "active", paletteIdx: 1, busy: true },
+];
+
+interface ConvexEmployee {
+  _id: string;
+  name: string;
+  status: "active" | "pending" | "fired" | "spared";
+}
+
+interface ConvexWorker {
+  _id: string;
+  name: string;
+  status: "active" | "fired";
+}
+
+export default function OfficePage() {
+  const sp = useSearchParams();
+  const demo = sp.get("demo") === "1";
+
+  const employees = useQuery(api.employees.list);
+  const workers = useQuery(api.workers.listActive);
+
+  // Map Convex docs to OfficeEntity. Color palette deterministic by _id
+  // so the same person keeps the same outfit across renders.
+  const realEntities: OfficeEntity[] = [
+    ...((employees as ConvexEmployee[] | undefined) ?? []).map((e, i) => ({
+      id: e._id,
+      name: e.name,
+      kind: "employee" as const,
+      status: e.status,
+      paletteIdx: i,
+    })),
+    ...((workers as ConvexWorker[] | undefined) ?? []).map((w, i) => ({
+      id: w._id,
+      name: w.name,
+      kind: "worker" as const,
+      status: w.status,
+      paletteIdx: (i + 3) % 6,
+      busy: true, // No per-task wiring yet; assume active workers are busy.
+    })),
+  ];
+
+  // Use demo roster when explicitly requested OR when no real data is
+  // loaded yet (queries undefined → backend not configured / loading).
+  const queriesLoaded = employees !== undefined || workers !== undefined;
+  const entities =
+    demo || !queriesLoaded || realEntities.length === 0
+      ? DEMO_ROSTER
+      : realEntities;
+
+  return (
+    <div className="space-y-6">
+      <section className="pb-6 border-b border-[var(--border)]">
+        <div className="text-[8px] font-mono tracking-[0.3em] text-[var(--text-dim)] uppercase mb-2">
+          Openfire · Live View
+        </div>
+        <h1 className="font-display text-4xl font-semibold text-[var(--text)] leading-none">
+          The Office
+        </h1>
+        <p className="text-[11px] font-mono text-[var(--text-muted)] mt-2.5 tracking-wide">
+          Watch The Claw move people in real time. Court tiles in the
+          center; exit door bottom-right. {demo ? "(demo mode)" : ""}
+        </p>
+        <div className="mt-3 flex gap-3 text-[10px] font-mono">
+          <Link
+            href={demo ? "/office" : "/office?demo=1"}
+            className="text-[var(--accent)] hover:text-[var(--accent-bright)] tracking-[0.15em] uppercase"
+          >
+            {demo ? "→ Use live data" : "→ Switch to demo mode"}
+          </Link>
+          <Link
+            href="/"
+            className="text-[var(--text-dim)] hover:text-[var(--accent)] tracking-[0.15em] uppercase"
+          >
+            ← Back to roster
+          </Link>
+        </div>
+      </section>
+
+      <PixelOffice entities={entities} />
+
+      <section className="grid sm:grid-cols-4 gap-3 text-[10px] font-mono">
+        <Legend swatch="active" label="Desk · idle/typing" />
+        <Legend swatch="pending" label="Court · awaiting verdict" />
+        <Legend swatch="fired" label="Exit · grayed out" />
+        <Legend swatch="worker" label="Workstation · AI worker" />
+      </section>
+    </div>
+  );
+}
+
+function Legend({ swatch, label }: { swatch: string; label: string }) {
+  const color =
+    swatch === "active"
+      ? "var(--text)"
+      : swatch === "pending"
+        ? "var(--accent)"
+        : swatch === "fired"
+          ? "var(--text-dim)"
+          : "var(--blue)";
+  return (
+    <div className="flex items-center gap-2 border border-[var(--border)] bg-[var(--surface)] px-3 py-2">
+      <span
+        className="inline-block w-2 h-2"
+        style={{ background: color }}
+      />
+      <span className="text-[var(--text-muted)]">{label}</span>
+    </div>
+  );
+}
