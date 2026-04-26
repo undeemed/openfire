@@ -325,7 +325,11 @@ export function PixelOffice({
   const lastTimeRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
   const onSelectRef = useRef(onSelect);
-  onSelectRef.current = onSelect;
+  // Keep the ref in sync after every commit so the click handler in the
+  // game-loop effect always calls the latest prop without re-binding.
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+  }, [onSelect]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
