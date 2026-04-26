@@ -15,16 +15,18 @@ export const handleInbound = action({
     thread_id: v.string(),
     message_id: v.string(),
     from: v.string(),
+    to: v.optional(v.string()),
     subject: v.string(),
     body: v.string(),
   },
   handler: async (
     ctx,
-    { thread_id, message_id, from, subject, body }
+    { thread_id, message_id, from, to, subject, body }
   ): Promise<{
     deduped?: boolean;
     unknownThread?: boolean;
     replied?: boolean;
+    routedToDigitalEmployee?: boolean;
     scheduledExitInterview?: boolean;
   }> => {
     // 1) Have we processed this exact AgentMail message before?
@@ -32,6 +34,31 @@ export const handleInbound = action({
       agentmail_message_id: message_id,
     });
     if (existing) return { deduped: true };
+
+    // 1b) Is this email addressed to a provisioned digital employee?
+    //     Route to that agent's reply path instead of the termination
+    //     thread handler. Multiple addresses in `to` are split on comma.
+    if (to) {
+      const recipients = to
+        .split(/[,;]/)
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+      for (const addr of recipients) {
+        const matched = await ctx.runQuery(api.digitalEmployees.getByInbox, {
+          agentmail_address: addr,
+        });
+        if (matched) {
+          await ctx.runAction(api.a2aHandler.handleInbound, {
+            agent_entity_id: matched.nozomio_entity_id,
+            sender_address: from,
+            text: body,
+            context_id: thread_id,
+            message_id,
+          });
+          return { replied: true, routedToDigitalEmployee: true };
+        }
+      }
+    }
 
     // 2) Find the matching termination thread.
     const decision = await ctx.runQuery(api.decisions.getByThreadId, {
