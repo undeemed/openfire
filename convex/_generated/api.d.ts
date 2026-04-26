@@ -14,6 +14,10 @@ import type * as decisions from "../decisions.js";
 import type * as emailHandler from "../emailHandler.js";
 import type * as employees from "../employees.js";
 import type * as messages from "../messages.js";
+import type * as workerRunner from "../workerRunner.js";
+import type * as workerTasks from "../workerTasks.js";
+import type * as workerTemplates from "../workerTemplates.js";
+import type * as workers from "../workers.js";
 
 import type {
   ApiFromModules,
@@ -28,6 +32,10 @@ declare const fullApi: ApiFromModules<{
   emailHandler: typeof emailHandler;
   employees: typeof employees;
   messages: typeof messages;
+  workerRunner: typeof workerRunner;
+  workerTasks: typeof workerTasks;
+  workerTemplates: typeof workerTemplates;
+  workers: typeof workers;
 }>;
 
 /**
