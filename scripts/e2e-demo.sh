@@ -58,6 +58,35 @@ curl -fsS -X POST "$BASE/api/a2a/$ENTITY_ID" \
     }
   }" | jq '.result.status.state, .result.artifacts'
 
+echo "==> sending JSON-RPC message/send WITH WorkerTask data part (RUBICON-style narrowing)"
+# This exercises the new path: orchestrator declares data_query upfront,
+# worker skips Slack+Jira sources and only searches GitHub+docs.
+curl -fsS -X POST "$BASE/api/a2a/$ENTITY_ID" \
+  -H 'content-type: application/json' \
+  -d "{
+    \"jsonrpc\":\"2.0\",
+    \"id\":2,
+    \"method\":\"message/send\",
+    \"params\":{
+      \"sender\":\"orchestrator@openfire.local\",
+      \"message\":{
+        \"role\":\"user\",
+        \"parts\":[
+          {\"kind\":\"text\",\"text\":\"Summarize the GitHub PRs the predecessor left open.\"},
+          {\"kind\":\"data\",\"data\":{
+            \"data_query\":{
+              \"namespaces\":[\"$THREAD_ID\",\"$ENTITY_ID\"],
+              \"source_types\":[\"github\"]
+            },
+            \"output_schema\":{\"required_fields\":[\"answer\",\"open_pr_count\"]}
+          }}
+        ],
+        \"messageId\":\"e2e_wt_$(date +%s)\",
+        \"contextId\":\"$THREAD_ID\"
+      }
+    }
+  }" | jq '.result.status.state, (.result.artifacts[0].parts[0].text | tostring | .[0:200])'
+
 echo "==> agent directory"
 curl -fsS "$BASE/api/agents/directory" | jq '.agents | length'
 

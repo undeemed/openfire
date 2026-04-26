@@ -141,6 +141,66 @@ describe("sendMessage", () => {
     expect(parsed.params.message.parts[0].text).toBe("yo");
     expect(parsed.params.message.contextId).toBe("ctx_x");
   });
+
+  test("workerTask is encoded as a data part alongside text", async () => {
+    let captured: string | undefined;
+    handle = mockFetch((_input, init) => {
+      captured = typeof init?.body === "string" ? init.body : undefined;
+      return jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          id: "t",
+          contextId: "ctx_x",
+          status: { state: "completed" },
+          kind: "task",
+        },
+      });
+    });
+    await sendMessage("http://fake/a2a", {
+      text: "do thing",
+      workerTask: {
+        data_query: {
+          namespaces: ["thread_1", "ent_ada"],
+          source_types: ["github", "jira"],
+        },
+        output_schema: { required_fields: ["answer"] },
+      },
+    });
+    expect(captured).toBeDefined();
+    const parsed = JSON.parse(captured!);
+    const parts = parsed.params.message.parts as Array<{
+      kind: string;
+      text?: string;
+      data?: { data_query?: { source_types?: string[] } };
+    }>;
+    expect(parts).toHaveLength(2);
+    expect(parts[0].kind).toBe("text");
+    expect(parts[0].text).toBe("do thing");
+    expect(parts[1].kind).toBe("data");
+    expect(parts[1].data?.data_query?.source_types).toEqual(["github", "jira"]);
+  });
+
+  test("omitting workerTask still produces single text part", async () => {
+    let captured: string | undefined;
+    handle = mockFetch((_input, init) => {
+      captured = typeof init?.body === "string" ? init.body : undefined;
+      return jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          id: "t",
+          contextId: "c",
+          status: { state: "completed" },
+          kind: "task",
+        },
+      });
+    });
+    await sendMessage("http://fake/a2a", { text: "no task bundle" });
+    const parsed = JSON.parse(captured!);
+    expect(parsed.params.message.parts).toHaveLength(1);
+    expect(parsed.params.message.parts[0].kind).toBe("text");
+  });
 });
 
 describe("getTask", () => {
