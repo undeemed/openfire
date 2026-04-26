@@ -7,15 +7,19 @@
  * Nozomio, asks Claude for a verdict against the live criteria, and
  * persists pending decisions. The loop is idempotent at every step:
  * employees with an existing pending/approved/sent decision are skipped
- * so re-running the agent never produces duplicate decisions.
+ * so re-running the agent never produces duplicate decisions. A failure
+ * on one employee no longer aborts the whole batch — each iteration is
+ * try/catch'd and the failed count is returned.
  *
  * `approveDecision` flips a pending decision into "sent" by dispatching
  * the email through AgentMail. It guards on current status so a panicked
- * manager rage-clicking "Approve" only triggers one email.
+ * manager rage-clicking "Approve" only triggers one email, and refuses
+ * to send empty drafts (escalated decisions).
  */
 import { action } from "./_generated/server";
 import { v } from "convex/values";
 import { api } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 
 export const runFireAgent = action({
   args: { employee_id: v.optional(v.id("employees")) },
@@ -27,6 +31,7 @@ export const runFireAgent = action({
     flagged: number;
     skipped: number;
     escalated: number;
+    failed: number;
   }> => {
     const { getEntityContext } = await import("../lib/nozomio");
     const { evaluateEmployee } = await import("../lib/claude");
@@ -39,105 +44,124 @@ export const runFireAgent = action({
 
     const criteria = await ctx.runQuery(api.criteria.listActive, {});
 
+    let processed = 0;
     let flagged = 0;
     let skipped = 0;
     let escalated = 0;
+    let failed = 0;
 
     for (const employee of employees) {
-      // Idempotency guard: don't re-evaluate someone who already has an
-      // open (non-rejected) decision.
-      const hasOpen = await ctx.runQuery(api.decisions.hasOpenDecision, {
-        employee_id: employee._id,
-      });
-      if (hasOpen) {
-        skipped++;
-        continue;
-      }
-      if (!employee.nozomio_entity_id) {
-        skipped++;
-        continue;
-      }
-
-      // Promise-based cache: parallel tool calls share one fetch instead of
-      // racing on a null check and triggering duplicate Nozomio requests.
-      let contextPromise: Promise<
-        Awaited<ReturnType<typeof getEntityContext>>
-      > | null = null;
-      const getNozomioContext = () =>
-        (contextPromise ??= getEntityContext(employee.nozomio_entity_id));
-
-      const searchEmployeeHistory = async (q: string) =>
-        await ctx.runQuery(api.agentHistory.searchForEmployee, {
+      try {
+        // Idempotency guard: don't re-evaluate someone who already has an
+        // open (non-rejected) decision.
+        const hasOpen = await ctx.runQuery(api.decisions.hasOpenDecision, {
           employee_id: employee._id,
-          query: q,
         });
+        if (hasOpen) {
+          skipped++;
+          continue;
+        }
+        if (!employee.nozomio_entity_id) {
+          skipped++;
+          continue;
+        }
 
-      const loop = await evaluateEmployee(
-        {
-          name: employee.name,
-          email: employee.email,
-          role: employee.role,
-        },
-        criteria.map(
-          (c: { name: string; description: string; weight: number }) => ({
-            name: c.name,
-            description: c.description,
-            weight: c.weight,
-          })
-        ),
-        { getNozomioContext, searchEmployeeHistory },
-      );
+        // Promise-based cache: parallel tool calls share one fetch instead
+        // of racing on a null check and triggering duplicate Nozomio requests.
+        let contextPromise: Promise<
+          Awaited<ReturnType<typeof getEntityContext>>
+        > | null = null;
+        const getNozomioContext = () =>
+          (contextPromise ??= getEntityContext(employee.nozomio_entity_id));
 
-      let decisionId: string | null = null;
+        const searchEmployeeHistory = async (q: string) =>
+          await ctx.runQuery(api.agentHistory.searchForEmployee, {
+            employee_id: employee._id,
+            query: q,
+          });
 
-      if (loop.outcome.kind === "decision") {
-        decisionId = await ctx.runMutation(api.decisions.create, {
-          employee_id: employee._id,
-          reasoning: loop.outcome.result.reasoning,
-          decision: loop.outcome.result.decision,
-          email_draft: loop.outcome.result.emailDraft,
-        });
-        if (loop.outcome.result.decision === "fire") flagged++;
-        else skipped++;
-      } else if (loop.outcome.kind === "escalation") {
-        decisionId = await ctx.runMutation(api.decisions.createEscalated, {
-          employee_id: employee._id,
-          reason: loop.outcome.reason,
-        });
-        escalated++;
-      } else {
-        // Loop exhausted without a terminal tool call. Treat as escalation
-        // so a human looks at it rather than silently dropping the
-        // employee.
-        decisionId = await ctx.runMutation(api.decisions.createEscalated, {
-          employee_id: employee._id,
-          reason:
-            "Agent loop exhausted iterations without producing a verdict. Manual review required.",
-        });
-        escalated++;
-      }
+        const loop = await evaluateEmployee(
+          {
+            name: employee.name,
+            email: employee.email,
+            role: employee.role,
+          },
+          criteria.map(
+            (c: { name: string; description: string; weight: number }) => ({
+              name: c.name,
+              description: c.description,
+              weight: c.weight,
+            })
+          ),
+          { getNozomioContext, searchEmployeeHistory },
+        );
 
-      if (decisionId && loop.toolCalls.length > 0) {
-        await ctx.runMutation(api.toolCalls.recordBatch, {
-          decision_id: decisionId as never,
-          calls: loop.toolCalls,
-        });
-      }
+        let decisionId: Id<"decisions"> | null = null;
 
-      if (decisionId) {
-        await ctx.runMutation(api.decisions.setIterations, {
-          id: decisionId as never,
-          iterations: loop.iterations,
-        });
+        if (loop.outcome.kind === "decision") {
+          decisionId = await ctx.runMutation(api.decisions.create, {
+            employee_id: employee._id,
+            reasoning: loop.outcome.result.reasoning,
+            decision: loop.outcome.result.decision,
+            email_draft: loop.outcome.result.emailDraft,
+          });
+          if (loop.outcome.result.decision === "fire") flagged++;
+          else skipped++;
+        } else if (loop.outcome.kind === "escalation") {
+          decisionId = await ctx.runMutation(api.decisions.createEscalated, {
+            employee_id: employee._id,
+            reason: loop.outcome.reason,
+          });
+          escalated++;
+        } else {
+          // Loop exhausted without a terminal tool call. Preserve the
+          // model's last text so operators can debug why it bailed
+          // instead of just seeing a generic message.
+          const tail = loop.outcome.lastText.trim().slice(0, 800);
+          const reason = tail
+            ? `Loop exhausted ${loop.iterations} iterations without verdict. Last model output: ${tail}`
+            : `Loop exhausted ${loop.iterations} iterations without verdict and no trailing text.`;
+          decisionId = await ctx.runMutation(api.decisions.createEscalated, {
+            employee_id: employee._id,
+            reason,
+          });
+          escalated++;
+        }
+
+        // Bookkeeping: best-effort. A failure here shouldn't abort the
+        // batch — the decision row already exists.
+        try {
+          if (decisionId && loop.toolCalls.length > 0) {
+            await ctx.runMutation(api.toolCalls.recordBatch, {
+              decision_id: decisionId,
+              calls: loop.toolCalls,
+            });
+          }
+          if (decisionId) {
+            await ctx.runMutation(api.decisions.setIterations, {
+              id: decisionId,
+              iterations: loop.iterations,
+            });
+          }
+        } catch (bookErr) {
+          console.warn(
+            `[agent] bookkeeping failed for employee ${employee._id}:`,
+            bookErr instanceof Error ? bookErr.message : String(bookErr),
+          );
+        }
+
+        processed++;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[agent] employee ${employee._id} failed:`,
+          message,
+        );
+        failed++;
       }
     }
 
-    return {
-      processed: employees.length,
-      flagged,
-      skipped,
-      escalated,
-    };
+    return { processed, flagged, skipped, escalated, failed };
   },
 });
 
@@ -163,6 +187,17 @@ export const approveDecision = action({
     }
     if (decision.status === "rejected") {
       throw new Error("cannot approve a rejected decision");
+    }
+    if (decision.status === "escalated") {
+      // Escalated decisions have an empty email_draft. Sending an empty
+      // termination email would be a customer-harm bug. Force the human
+      // to author a fresh decision via a different code path.
+      throw new Error(
+        "cannot approve an escalated decision — re-run the agent or author a manual decision first",
+      );
+    }
+    if (!decision.email_draft || decision.email_draft.trim().length === 0) {
+      throw new Error("cannot approve decision with empty email_draft");
     }
 
     const employee = await ctx.runQuery(api.employees.get, {

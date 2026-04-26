@@ -23,6 +23,8 @@ import {
 
 const MODEL = "claude-sonnet-4-6-20250929";
 const MAX_ITERATIONS = 8;
+const MAX_TOKENS_EVALUATE = 4096;
+const MAX_TOKENS_REPLY = 1024;
 
 function getClient() {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -149,7 +151,7 @@ export async function evaluateEmployee(
         iteration: 0,
         tool_name: "search_employee_history",
         input_json: JSON.stringify({ query: employee.name }),
-        output_json: JSON.stringify({ query: employee.name, hits: preHistory }),
+        output_json: JSON.stringify({ query: employee.name, ...preHistory }),
         is_error: false,
         duration_ms: preDuration,
       },
@@ -187,7 +189,7 @@ export async function evaluateEmployee(
           {
             type: "tool_result" as const,
             tool_use_id: preHistoryId,
-            content: JSON.stringify({ query: employee.name, hits: preHistory }),
+            content: JSON.stringify({ query: employee.name, ...preHistory }),
             is_error: false,
           },
         ],
@@ -201,6 +203,15 @@ export async function evaluateEmployee(
     // messages stays as just the user turn — Claude will call tools normally.
   }
 
+  // Mark the last tool schema with cache_control so the (static) tools
+  // block hits the prompt cache on subsequent iterations + subsequent
+  // employees within the 5-minute TTL.
+  const cachedTools: Anthropic.Tool[] = TOOL_SCHEMAS.map((t, i) =>
+    i === TOOL_SCHEMAS.length - 1
+      ? ({ ...t, cache_control: { type: "ephemeral" } } as Anthropic.Tool)
+      : t,
+  );
+
   let iteration = 0;
   let lastAssistantText = "";
 
@@ -209,7 +220,7 @@ export async function evaluateEmployee(
 
     const response = await client.messages.create({
       model: MODEL,
-      max_tokens: 1500,
+      max_tokens: MAX_TOKENS_EVALUATE,
       system: [
         {
           type: "text",
@@ -217,7 +228,7 @@ export async function evaluateEmployee(
           cache_control: { type: "ephemeral" },
         },
       ],
-      tools: TOOL_SCHEMAS,
+      tools: cachedTools,
       messages,
     });
 
@@ -229,6 +240,24 @@ export async function evaluateEmployee(
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
     );
+
+    // If the model truncated mid-response, bail out clearly. A truncated
+    // tool_use block can have malformed JSON in `block.input` which the
+    // dispatcher would reject with is_error — surface that as exhaustion
+    // rather than letting the loop spin.
+    if (response.stop_reason === "max_tokens") {
+      console.warn("[agent] hit max_tokens in iteration", iteration);
+      return {
+        outcome: {
+          kind: "exhausted",
+          lastText:
+            lastAssistantText ||
+            "Model output exceeded max_tokens; response was truncated.",
+        },
+        iterations: iteration,
+        toolCalls: traces,
+      };
+    }
 
     if (toolUseBlocks.length === 0) {
       // Model ended without calling a terminal tool. Bail.
@@ -244,8 +273,32 @@ export async function evaluateEmployee(
 
     for (const block of toolUseBlocks) {
       const start = Date.now();
-      const result = await runTool(block.name, block.input, deps);
+      let result;
+      try {
+        result = await runTool(block.name, block.input, deps);
+      } catch (err) {
+        // A handler threw (Convex query failed, network timeout, etc.).
+        // Convert to an is_error tool_result so the model can see what
+        // went wrong and decide whether to retry, switch tools, or
+        // escalate — instead of crashing the whole loop.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[agent] tool ${block.name} threw on iteration ${iteration}:`,
+          message,
+        );
+        result = {
+          output: { error: `tool execution failed: ${message}` },
+          is_error: true,
+        };
+      }
       const duration_ms = Date.now() - start;
+
+      if (result.is_error) {
+        console.warn(
+          `[agent] tool error iter=${iteration} tool=${block.name}`,
+          result.output,
+        );
+      }
 
       traces.push({
         iteration,
@@ -408,7 +461,7 @@ export async function handleReply(
 
   const response = await client.messages.create({
     model: MODEL,
-    max_tokens: 700,
+    max_tokens: MAX_TOKENS_REPLY,
     system: [
       {
         type: "text",
@@ -437,9 +490,20 @@ Compose the reply now. JSON only.`,
     if (typeof obj.reply === "string" && typeof obj.subject === "string") {
       return { reply: obj.reply, subject: obj.subject };
     }
-  } catch {
-    // fall through
+    console.error(
+      "[agent] handleReply produced JSON missing required fields:",
+      cleaned.slice(0, 500),
+    );
+  } catch (err) {
+    console.error(
+      "[agent] handleReply JSON parse failed:",
+      err instanceof Error ? err.message : String(err),
+      "raw:",
+      cleaned.slice(0, 500),
+    );
   }
+  // Fall through to canned demo reply. This path is risky (see lib/claude.ts
+  // comments) — operator should monitor for [agent] handleReply errors.
   return demoReply(thread);
 }
 
