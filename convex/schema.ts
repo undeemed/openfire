@@ -38,9 +38,19 @@ export default defineSchema({
     // Filled in by book_exit_interview tool — replaces the regex check in
     // emailHandler.ts so the reply loop knows the slot is booked.
     exit_interview_event_id: v.optional(v.string()),
-    // How many tool-use iterations the agent ran to reach this decision.
-    // Useful for cost / quality regression tracking.
+    // ISO strings of the booked slot, persisted alongside event_id so a
+    // future reply that quotes the time stays consistent with the
+    // calendar event actually on disk.
+    exit_interview_start: v.optional(v.string()),
+    exit_interview_end: v.optional(v.string()),
+    // How many tool-use iterations the agent ran across BOTH the
+    // evaluator and any subsequent reply loops. Reply trace iterations
+    // are offset by this value so they don't collide in tool_calls.
     iterations: v.optional(v.number()),
+    // Set when the reply loop escalates or exhausts. Distinct from
+    // `escalated_reason` (which is eval-time) so the dossier can show
+    // both signals independently.
+    reply_escalated_reason: v.optional(v.string()),
   })
     .index("by_employee", ["employee_id"])
     .index("by_status", ["status"])

@@ -6,6 +6,13 @@
  * given `agentmail_message_id`, the action returns early without calling
  * Claude or sending another reply. This matters because AgentMail may
  * retry webhook deliveries on transient errors.
+ *
+ * Reply path now uses a tool-use loop (see lib/claude.ts:handleReply).
+ * Calendar booking happens via the `book_exit_interview` tool — only
+ * when the model explicitly calls it. The previous regex hack (matching
+ * "exit interview" anywhere in Claude's reply text) is gone, removing a
+ * class of false-positive bookings on phrases like "we already did
+ * your exit interview" or "no need for an exit interview".
  */
 import { action } from "./_generated/server";
 import { v } from "convex/values";
@@ -30,16 +37,17 @@ export const handleInbound = action({
     replied?: boolean;
     routedToDigitalEmployee?: boolean;
     scheduledExitInterview?: boolean;
+    escalated?: boolean;
+    exhausted?: boolean;
   }> => {
-    // 1) Have we processed this exact AgentMail message before?
+    // 1) Dedup by AgentMail message_id.
     const existing = await ctx.runQuery(api.messages.byMessageId, {
       agentmail_message_id: message_id,
     });
     if (existing) return { deduped: true };
 
-    // 1b) Is this email addressed to a provisioned digital employee?
-    //     Route to that agent's reply path instead of the termination
-    //     thread handler. Multiple addresses in `to` are split on comma.
+    // 1b) Route to digital-employee A2A handler if addressed to a
+    //     provisioned inbox. Multiple addresses split on `,;`.
     if (to) {
       const recipients = to
         .split(/[,;]/)
@@ -83,12 +91,11 @@ export const handleInbound = action({
       agentmail_message_id: message_id,
     });
 
-    // 4) Pull the running thread, ask Claude for a reply.
+    // 4) Pull the running thread, run the reply tool-use loop.
     const thread = await ctx.runQuery(api.messages.listForDecision, {
       decision_id: decision._id as Id<"decisions">,
     });
 
-    const { handleReply } = await import("../lib/claude");
     const turns = thread.map(
       (m: {
         direction: "inbound" | "outbound";
@@ -100,16 +107,176 @@ export const handleInbound = action({
         from: m.from,
         subject: m.subject,
         body: m.body,
-      })
+      }),
     );
-    const replyResult = await handleReply(turns, decision.reasoning);
 
-    // 5) Send the reply via AgentMail (within the same thread).
+    // Iteration offset so reply trace doesn't collide with evaluator
+    // trace in the tool_calls table for this decision.
+    const iterationOffset = decision.iterations ?? 0;
+
+    // bookExitInterview: idempotent at THREE levels. (1) decision row
+    // already has event_id+start+end → return it. (2) within this loop,
+    // memoize the first booking so a model issuing two parallel
+    // tool_use blocks doesn't double-book on Google Calendar. (3) demo
+    // path returns synthetic but stable ids per-decision.
+    const { scheduleExitInterview } = await import("../lib/calendar");
+    let cachedBooking:
+      | { event_id: string; start: string; end: string; simulated: boolean }
+      | undefined;
+    if (decision.exit_interview_event_id) {
+      cachedBooking = {
+        event_id: decision.exit_interview_event_id,
+        start: decision.exit_interview_start ?? "",
+        end: decision.exit_interview_end ?? "",
+        simulated: true,
+      };
+    }
+    const bookExitInterview = async () => {
+      if (cachedBooking) return cachedBooking;
+      cachedBooking = await scheduleExitInterview(
+        employee.email,
+        employee.name,
+      );
+      return cachedBooking;
+    };
+
+    const { handleReply } = await import("../lib/claude");
+    const loop = await handleReply(
+      turns,
+      decision.reasoning,
+      { bookExitInterview },
+      iterationOffset,
+    );
+
+    // 5) Persist reply tool trace alongside the evaluator trace, then
+    //    advance the iteration cursor on the decision so the NEXT
+    //    inbound reply offsets correctly. Without this update, two
+    //    inbound messages would write reply trace rows with overlapping
+    //    iteration numbers and the dossier timeline would interleave
+    //    them.
+    if (loop.toolCalls.length > 0) {
+      try {
+        await ctx.runMutation(api.toolCalls.recordBatch, {
+          decision_id: decision._id as Id<"decisions">,
+          calls: loop.toolCalls,
+        });
+      } catch (e) {
+        console.warn(
+          "[emailHandler] reply trace recordBatch failed:",
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+    if (loop.iterations > 0) {
+      try {
+        await ctx.runMutation(api.decisions.setIterations, {
+          id: decision._id as Id<"decisions">,
+          iterations: iterationOffset + loop.iterations,
+        });
+      } catch (e) {
+        console.warn(
+          "[emailHandler] reply iterations update failed:",
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+
+    // 6) Persist the booked event id+start+end so future replies on
+    //    this thread short-circuit and any quoted time stays consistent
+    //    with what's actually on the calendar.
+    let scheduledExitInterview = false;
+    if (loop.bookedExitInterview && !decision.exit_interview_event_id) {
+      try {
+        await ctx.runMutation(api.decisions.setExitInterviewEvent, {
+          id: decision._id as Id<"decisions">,
+          event_id: loop.bookedExitInterview.event_id,
+          start: loop.bookedExitInterview.start,
+          end: loop.bookedExitInterview.end,
+        });
+        await ctx.runMutation(api.messages.create, {
+          decision_id: decision._id as Id<"decisions">,
+          direction: "outbound",
+          subject: `Exit Interview Scheduled — ${employee.name}`,
+          body: `Exit interview scheduled for ${loop.bookedExitInterview.start}. Calendar event id: ${loop.bookedExitInterview.event_id}.`,
+          from:
+            process.env.AGENTMAIL_INBOX_ADDRESS ?? "claw@openfire.local",
+        });
+        scheduledExitInterview = true;
+      } catch (e) {
+        console.warn(
+          "[emailHandler] persist exit interview event failed:",
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+
+    // 7) Handle the loop outcome. Reply-time escalation/exhaustion
+    //    persists `reply_escalated_reason` so the dossier banner
+    //    surfaces it (the original termination's status stays as-is —
+    //    the reply went off the rails, not the original decision).
+    const persistReplyEscalated = async (reason: string) => {
+      try {
+        await ctx.runMutation(api.decisions.setReplyEscalated, {
+          id: decision._id as Id<"decisions">,
+          reason,
+        });
+      } catch (e) {
+        console.warn(
+          "[emailHandler] persist reply escalation failed:",
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    };
+
+    if (loop.outcome.kind === "escalation") {
+      await persistReplyEscalated(loop.outcome.reason);
+      await ctx.runMutation(api.messages.create, {
+        decision_id: decision._id as Id<"decisions">,
+        direction: "outbound",
+        subject: `Escalation — ${employee.name}`,
+        body: `[ESCALATED — no email sent] Reason: ${loop.outcome.reason}`,
+        from:
+          process.env.AGENTMAIL_INBOX_ADDRESS ?? "claw@openfire.local",
+      });
+      return {
+        replied: false,
+        escalated: true,
+        scheduledExitInterview,
+      };
+    }
+
+    if (loop.outcome.kind === "exhausted") {
+      const tail = loop.outcome.lastText.trim().slice(0, 400);
+      console.warn(
+        "[emailHandler] reply loop exhausted; not auto-replying. lastText:",
+        tail,
+      );
+      await persistReplyEscalated(
+        tail
+          ? `Reply loop exhausted ${loop.iterations} iterations. Last model output: ${tail}`
+          : `Reply loop exhausted ${loop.iterations} iterations with no trailing text.`,
+      );
+      await ctx.runMutation(api.messages.create, {
+        decision_id: decision._id as Id<"decisions">,
+        direction: "outbound",
+        subject: `Reply Loop Exhausted — ${employee.name}`,
+        body: `[EXHAUSTED — no email sent] Iterations: ${loop.iterations}. Last model output: ${tail}`,
+        from:
+          process.env.AGENTMAIL_INBOX_ADDRESS ?? "claw@openfire.local",
+      });
+      return {
+        replied: false,
+        exhausted: true,
+        scheduledExitInterview,
+      };
+    }
+
+    // 8) Send the reply email (loop.outcome.kind === "reply").
     const { sendEmail } = await import("../lib/agentmail");
     const sent = await sendEmail({
       to: from,
-      subject: replyResult.subject,
-      body: replyResult.reply,
+      subject: loop.outcome.subject,
+      body: loop.outcome.reply,
       thread_id,
       reply_to_message_id: message_id,
     });
@@ -117,43 +284,11 @@ export const handleInbound = action({
     await ctx.runMutation(api.messages.create, {
       decision_id: decision._id as Id<"decisions">,
       direction: "outbound",
-      subject: replyResult.subject,
-      body: replyResult.reply,
+      subject: loop.outcome.subject,
+      body: loop.outcome.reply,
       from: process.env.AGENTMAIL_INBOX_ADDRESS ?? "claw@openfire.local",
       agentmail_message_id: sent.message_id,
     });
-
-    // 6) If Claude offered an exit interview, schedule one — but only
-    //    once per decision. The optional `exit_interview_event_id` field
-    //    on `decisions` would be the cleaner home; for now the presence
-    //    of an interview-scheduling reply line is the trigger and we
-    //    debounce by checking whether *any* existing outbound message
-    //    in the thread already references "Exit Interview".
-    let scheduledExitInterview = false;
-    const wantsInterview = /exit interview|exit-interview/i.test(
-      replyResult.reply
-    );
-    if (wantsInterview) {
-      const alreadyScheduled = thread.some((m: { body: string }) =>
-        /exit interview scheduled/i.test(m.body)
-      );
-      if (!alreadyScheduled) {
-        try {
-          const { scheduleExitInterview } = await import("../lib/calendar");
-          const ev = await scheduleExitInterview(employee.email, employee.name);
-          await ctx.runMutation(api.messages.create, {
-            decision_id: decision._id as Id<"decisions">,
-            direction: "outbound",
-            subject: `Exit Interview Scheduled — ${employee.name}`,
-            body: `Exit interview scheduled for ${ev.start}. Calendar event id: ${ev.event_id}.`,
-            from: process.env.AGENTMAIL_INBOX_ADDRESS ?? "claw@openfire.local",
-          });
-          scheduledExitInterview = true;
-        } catch (e) {
-          console.warn("[emailHandler] calendar schedule failed:", e);
-        }
-      }
-    }
 
     return { replied: true, scheduledExitInterview };
   },

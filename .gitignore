@@ -44,8 +44,11 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# tooling / scratch
-.claude/
+# tooling / scratch — keep only first-party openfire-* skills tracked
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/openfire-*/
 .agents/
 .playwright-mcp/
 /*.png

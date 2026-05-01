@@ -193,9 +193,38 @@ export const setExitInterviewEvent = mutation({
   args: {
     id: v.id("decisions"),
     event_id: v.string(),
+    start: v.optional(v.string()),
+    end: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.id, { exit_interview_event_id: args.event_id });
+    const patch: {
+      exit_interview_event_id: string;
+      exit_interview_start?: string;
+      exit_interview_end?: string;
+    } = { exit_interview_event_id: args.event_id };
+    if (args.start) patch.exit_interview_start = args.start;
+    if (args.end) patch.exit_interview_end = args.end;
+    await ctx.db.patch(args.id, patch);
+  },
+});
+
+/**
+ * Persist a reply-time escalation reason. Distinct from `escalate`
+ * (which transitions pending → escalated for eval-time bailouts) — this
+ * runs after the original termination has already been sent and the
+ * inbound reply went off the rails. Status stays whatever it was;
+ * the dossier banner picks up reply_escalated_reason directly.
+ */
+export const setReplyEscalated = mutation({
+  args: {
+    id: v.id("decisions"),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const d = await ctx.db.get(args.id);
+    if (!d) throw new Error("Decision not found");
+    await ctx.db.patch(args.id, { reply_escalated_reason: args.reason });
+    return { ok: true };
   },
 });
 
